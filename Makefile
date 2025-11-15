@@ -9,6 +9,9 @@ VENV := $(INSTALL_DIR)/.venv
 ENV_FILE := $(INSTALL_DIR)/.env
 TMP_UNIT := /tmp/$(SERVICE_NAME)
 APT_PACKAGES := python3-venv git gettext-base
+BUILD_TMP_DIR ?= $(INSTALL_DIR)/.build
+PIP_TMPDIR := $(BUILD_TMP_DIR)/pip-tmp
+PIP_CACHE_DIR := $(BUILD_TMP_DIR)/pip-cache
 
 .PHONY: deploy pull venv deps service enable journal status stop start restart clean-venv
 
@@ -29,7 +32,8 @@ venv:
 	cd $(INSTALL_DIR) && $(PYTHON) -m venv .venv
 
 deps:
-	$(VENV)/bin/python -m pip install -r $(INSTALL_DIR)/requirements.txt
+	mkdir -p $(PIP_TMPDIR) $(PIP_CACHE_DIR)
+	TMPDIR=$(PIP_TMPDIR) PIP_CACHE_DIR=$(PIP_CACHE_DIR) $(VENV)/bin/python -m pip install -r $(INSTALL_DIR)/requirements.txt
 
 service:
 	env INSTALL_DIR=$(INSTALL_DIR) PI_USER=$(PI_USER) envsubst < $(SYSTEMD_UNIT) > $(TMP_UNIT)
