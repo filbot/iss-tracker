@@ -1,0 +1,27 @@
+[project]
+name = "iss-display"
+version = "0.1.0"
+description = "Self-contained ISS tracker for GeeekPi 2.13 inch e-paper"
+authors = [{name = "ISS Display Maintainers"}]
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0.0",
+    "requests>=2.32.0",
+    "python-dotenv>=1.0.0",
+    "numpy>=1.26.0"
+]
+
+[project.optional-dependencies]
+hw = [
+    "spidev",
+    "RPi.GPIO"
+]
+
+dynamic = ["readme"]
+
+[build-system]
+requires = ["setuptools>=62.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

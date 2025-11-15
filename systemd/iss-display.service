@@ -1,0 +1,17 @@
+[Unit]
+Description=ISS E-paper Display
+After=network-online.target spi-config.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${PI_USER}
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
+Environment=PYTHONPATH=${INSTALL_DIR}/src
+ExecStart=${INSTALL_DIR}/.venv/bin/python -m iss_display.app.main daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
