@@ -123,16 +123,16 @@ This setup boots the Pi Zero into the display loop automatically, keeps the virt
 - If the app can’t import `RPi.GPIO` (e.g., when running on a laptop), it automatically disables the LED and logs a warning.
 
 ### Makefile Automation
-For repeat deployments, take advantage of the provided `Makefile` targets (override `INSTALL_DIR`, `PI_USER`, or `REPO_URL` as needed):
+For repeat deployments, take advantage of the provided `Makefile` targets (override `INSTALL_DIR` or `PI_USER` as needed; `INSTALL_DIR` defaults to the currently checked-out repo, so clone first and then run `make deploy` from that directory):
 
 ```bash
-make deploy            # install apt deps, clone/update repo, set up venv, install service
+make deploy            # install apt deps, refresh repo in place, set up venv, install service
 make restart           # restart the daemon
 make journal           # follow service logs
 make stop|start|status # control the systemd unit
 ```
 
-`make deploy` requires `sudo` privileges, installs `python3-venv git gettext-base`, ensures `.env` exists (copied from `.env.example` if missing), renders `systemd/iss-display.service` with your chosen paths via `envsubst`, reloads `systemd`, and enables the service so the display loop starts immediately.
+`make deploy` requires `sudo` privileges, installs `python3-venv git gettext-base`, verifies the repo already exists under `INSTALL_DIR`, pulls the latest changes, bootstraps the virtualenv, ensures `.env` exists (copied from `.env.example` if missing), renders `systemd/iss-display.service` with your chosen paths via `envsubst`, reloads `systemd`, and enables the service so the display loop starts immediately.
 
 ### Project Structure
 ```
