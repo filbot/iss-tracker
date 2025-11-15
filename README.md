@@ -68,7 +68,7 @@ Running as a `systemd` service is the most reliable option for a Pi Zero: it kee
 	```bash
 	sudo apt update && sudo apt install python3-venv -y
 	git clone https://github.com/<your-fork>/iss-tracker.git
-	cd e-display-iss-map
+	cd iss-tracker
 	python3 -m venv .venv
 	source .venv/bin/activate
 	pip install -r requirements.txt
