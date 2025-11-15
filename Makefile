@@ -1,24 +1,24 @@
 # Helper targets for deploying the ISS display to a Raspberry Pi
 
-REPO_URL ?= https://github.com/your-user/e-display-iss-map.git
 PI_USER ?= pi
-INSTALL_DIR ?= /home/$(PI_USER)/e-display-iss-map
+INSTALL_DIR ?= $(CURDIR)
 PYTHON ?= python3
 SERVICE_NAME ?= iss-display.service
-SYSTEMD_UNIT ?= systemd/iss-display.service
+SYSTEMD_UNIT ?= $(INSTALL_DIR)/systemd/iss-display.service
 VENV := $(INSTALL_DIR)/.venv
 ENV_FILE := $(INSTALL_DIR)/.env
 TMP_UNIT := /tmp/$(SERVICE_NAME)
+APT_PACKAGES := python3-venv git gettext-base
 
 .PHONY: deploy pull venv deps service enable journal status stop start restart clean-venv
 
 deploy: ## Full install/update on Raspberry Pi OS (requires sudo)
-	sudo apt update && sudo apt install -y python3-venv git gettext-base
-	test -d $(INSTALL_DIR) || git clone $(REPO_URL) $(INSTALL_DIR)
+	sudo apt update && sudo apt install -y $(APT_PACKAGES)
+	test -d $(INSTALL_DIR)/.git
 	$(MAKE) pull
 	$(MAKE) venv
 	$(MAKE) deps
-	cp -n .env.example $(ENV_FILE) || true
+	cp -n $(INSTALL_DIR)/.env.example $(ENV_FILE) || true
 	$(MAKE) service
 	$(MAKE) enable
 
@@ -29,7 +29,7 @@ venv:
 	cd $(INSTALL_DIR) && $(PYTHON) -m venv .venv
 
 deps:
-	cd $(INSTALL_DIR) && . .venv/bin/activate && pip install -r requirements.txt
+	$(VENV)/bin/python -m pip install -r $(INSTALL_DIR)/requirements.txt
 
 service:
 	env INSTALL_DIR=$(INSTALL_DIR) PI_USER=$(PI_USER) envsubst < $(SYSTEMD_UNIT) > $(TMP_UNIT)
