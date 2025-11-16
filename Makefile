@@ -1,6 +1,6 @@
 # Helper targets for deploying the ISS display to a Raspberry Pi
 
-PI_USER ?= pi
+PI_USER ?= $(shell id -un 2>/dev/null || echo pi)
 INSTALL_DIR ?= $(CURDIR)
 PYTHON ?= python3
 SERVICE_NAME ?= iss-display.service

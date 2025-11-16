@@ -123,7 +123,7 @@ This setup boots the Pi Zero into the display loop automatically, keeps the virt
 - If the app can’t import `RPi.GPIO` (e.g., when running on a laptop), it automatically disables the LED and logs a warning.
 
 ### Makefile Automation
-For repeat deployments, take advantage of the provided `Makefile` targets (override `INSTALL_DIR` or `PI_USER` as needed; `INSTALL_DIR` defaults to the currently checked-out repo, so clone first and then run `make deploy` from that directory):
+For repeat deployments, take advantage of the provided `Makefile` targets (`INSTALL_DIR` defaults to the currently checked-out repo and `PI_USER` auto-detects the invoking user—override either if you need a different path or service account):
 
 ```bash
 make deploy            # install apt deps, refresh repo in place, set up venv, install service
