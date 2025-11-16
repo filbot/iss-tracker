@@ -132,7 +132,7 @@ make journal           # follow service logs
 make stop|start|status # control the systemd unit
 ```
 
-`make deploy` requires `sudo` privileges, installs `python3-venv git gettext-base`, verifies the repo already exists under `INSTALL_DIR`, pulls the latest changes, bootstraps the virtualenv, ensures `.env` exists (copied from `.env.example` if missing), renders `systemd/iss-display.service` with your chosen paths via `envsubst`, reloads `systemd`, and enables the service so the display loop starts immediately. Heavy wheels (e.g., `numpy`, `Pillow`) are built with `TMPDIR`/`PIP_CACHE_DIR` redirected to `$(INSTALL_DIR)/.build/` so they never run out of space on the Pi’s small `/tmp`; delete that directory if you ever want to reclaim the cache.
+`make deploy` requires `sudo` privileges, installs `python3-venv git gettext-base libssl-dev libcurl4-openssl-dev`, verifies the repo already exists under `INSTALL_DIR`, pulls the latest changes, bootstraps the virtualenv, ensures `.env` exists (copied from `.env.example` if missing), renders `systemd/iss-display.service` with your chosen paths via `envsubst`, reloads `systemd`, and enables the service so the display loop starts immediately. Heavy wheels (e.g., `numpy`, `Pillow`) are built with `TMPDIR`/`PIP_CACHE_DIR` redirected to `$(INSTALL_DIR)/.build/` so they never run out of space on the Pi’s small `/tmp`; delete that directory if you ever want to reclaim the cache.
 
 ### Project Structure
 ```
