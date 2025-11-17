@@ -73,8 +73,43 @@ class FrameLayout:
 
         draw = ImageDraw.Draw(background)
         self._draw_pin(draw)
-        self._draw_telemetry(draw, fix)
-        self._draw_footer(draw, fix)
+
+        telemetry_rows = self._build_telemetry_rows(fix)
+        telemetry_metrics = self._measure_telemetry(
+            draw,
+            telemetry_rows,
+            padding_x=10,
+            padding_y=6,
+            column_gap=8,
+            line_spacing=4,
+        )
+        footer_text = self._build_footer_text(fix)
+        footer_metrics = self._measure_footer(draw, footer_text, padding_x=10, padding_y=4)
+
+        shared_width = max(telemetry_metrics["width"], footer_metrics["width"])
+        shared_width = min(shared_width, self.width)
+        x0 = max(0, (self.width - shared_width) // 2)
+        x1 = x0 + shared_width
+
+        self._draw_telemetry(
+            draw,
+            telemetry_rows,
+            (x0, x1),
+            telemetry_metrics,
+            top_margin=8,
+            line_spacing=4,
+            padding_x=10,
+            padding_y=6,
+        )
+        self._draw_footer(
+            draw,
+            footer_text,
+            (x0, x1),
+            footer_metrics,
+            padding_x=10,
+            padding_y=4,
+            bottom_margin=8,
+        )
         return background
 
     def _draw_pin(self, draw: ImageDraw.ImageDraw) -> None:
@@ -92,43 +127,135 @@ class FrameLayout:
             fill=self.pin_color,
         )
 
-    def _draw_telemetry(self, draw: ImageDraw.ImageDraw, fix: ISSFix) -> None:
-        text_lines = [
-            f"Lat: {fix.latitude:.2f}",
-            f"Lon: {fix.longitude:.2f}",
-        ]
-        if fix.altitude_km is not None:
-            text_lines.append(f"Alt: {fix.altitude_km:.0f} km")
-        if fix.velocity_kmh is not None:
-            text_lines.append(f"Vel: {fix.velocity_kmh:.0f} km/h")
+    def _draw_telemetry(
+        self,
+        draw: ImageDraw.ImageDraw,
+        rows: list[tuple[str, str]],
+        bounds: tuple[int, int],
+        metrics: dict,
+        *,
+        top_margin: int,
+        line_spacing: int,
+        padding_x: int,
+        padding_y: int,
+    ) -> None:
+        if not rows:
+            return
 
-        text = "\n".join(text_lines)
-        padding = 6
-        text_width, text_height = self._measure_multiline(draw, text)
-        box = [
-            padding,
-            padding,
-            padding + text_width + 4,
-            padding + text_height + 4,
-        ]
-        draw.rectangle(box, fill=(255, 255, 255, 200))
-        draw.multiline_text((padding + 2, padding + 2), text, fill="black", font=self.font)
+        x0, x1 = bounds
+        y0 = top_margin
+        y1 = y0 + metrics["content_height"] + padding_y * 2
+        draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 255, 200))
+        text_y = y0 + padding_y
+        inner_width = (x1 - x0) - padding_x * 2
 
-    def _draw_footer(self, draw: ImageDraw.ImageDraw, fix: ISSFix) -> None:
-        location = describe_groundtrack(fix.latitude, fix.longitude)
-        text = f"Somewhere over\n{location}"
-        text_width, text_height = self._measure_multiline(draw, text)
-        padding_x = 10
-        padding_y = 4
-        bottom_margin = 8
-        total_width = text_width + padding_x * 2
+        for idx, (row_metrics, (key, value)) in enumerate(zip(metrics["rows"], rows)):
+            row_height = row_metrics["height"]
+            key_width = row_metrics["key_width"]
+            value_width = row_metrics["value_width"]
+            draw.text((x0 + padding_x, text_y), key, fill="black", font=self.font)
+            value_x = x0 + padding_x + inner_width - value_width
+            draw.text((value_x, text_y), value, fill="black", font=self.font)
+            text_y += row_height
+            if idx < len(rows) - 1:
+                text_y += line_spacing
+
+    def _draw_footer(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        bounds: tuple[int, int],
+        metrics: dict,
+        *,
+        padding_x: int,
+        padding_y: int,
+        bottom_margin: int,
+    ) -> None:
+        x0, x1 = bounds
+        text_width = metrics["text_width"]
+        text_height = metrics["text_height"]
         total_height = text_height + padding_y * 2
-        x0 = max(0, (self.width - total_width) // 2)
-        x1 = min(self.width, x0 + total_width)
         y1 = self.height - bottom_margin
         y0 = max(0, y1 - total_height)
         draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 255, 200))
-        draw.multiline_text((x0 + padding_x, y0 + padding_y), text, fill="black", font=self.font, align="center")
+        text_x = x0 + max(0, ((x1 - x0) - text_width) // 2)
+        draw.multiline_text((text_x, y0 + padding_y), text, fill="black", font=self.font, align="center")
+
+    def _build_telemetry_rows(self, fix: ISSFix) -> list[tuple[str, str]]:
+        rows = [
+            ("Lat", f"{fix.latitude:.2f}"),
+            ("Lon", f"{fix.longitude:.2f}"),
+        ]
+        if fix.altitude_km is not None:
+            rows.append(("Alt", f"{fix.altitude_km:.0f} km"))
+        if fix.velocity_kmh is not None:
+            rows.append(("Vel", f"{fix.velocity_kmh:.0f} km/h"))
+        return rows
+
+    def _build_footer_text(self, fix: ISSFix) -> str:
+        location = describe_groundtrack(fix.latitude, fix.longitude)
+        return f"Somewhere over\n{location}"
+
+    def _measure_telemetry(
+        self,
+        draw: ImageDraw.ImageDraw,
+        rows: list[tuple[str, str]],
+        *,
+        padding_x: int,
+        padding_y: int,
+        column_gap: int,
+        line_spacing: int,
+    ) -> dict:
+        metrics_rows: list[dict[str, int]] = []
+        max_inner_width = 0
+        total_height = 0
+        for key, value in rows:
+            key_width, key_height = self._measure_text(draw, key)
+            value_width, value_height = self._measure_text(draw, value)
+            row_height = max(key_height, value_height)
+            metrics_rows.append(
+                {
+                    "height": row_height,
+                    "key_width": key_width,
+                    "value_width": value_width,
+                }
+            )
+            max_inner_width = max(max_inner_width, key_width + column_gap + value_width)
+            total_height += row_height
+
+        content_height = total_height + line_spacing * max(len(rows) - 1, 0)
+        total_width = max_inner_width + padding_x * 2
+        return {
+            "width": total_width,
+            "content_height": content_height,
+            "rows": metrics_rows,
+        }
+
+    def _measure_footer(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        *,
+        padding_x: int,
+        padding_y: int,
+    ) -> dict:
+        text_width, text_height = self._measure_multiline(draw, text)
+        total_width = text_width + padding_x * 2
+        return {
+            "width": total_width,
+            "text_width": text_width,
+            "text_height": text_height,
+        }
+
+    def _measure_text(self, draw: ImageDraw.ImageDraw, text: str) -> tuple[int, int]:
+        try:
+            bbox = draw.textbbox((0, 0), text, font=self.font)
+            return bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except AttributeError:
+            if hasattr(self.font, "getbbox"):
+                bbox = self.font.getbbox(text)
+                return bbox[2] - bbox[0], bbox[3] - bbox[1]
+            return self.font.getsize(text)
 
     def _measure_multiline(self, draw: ImageDraw.ImageDraw, text: str) -> tuple[int, int]:
         try:
