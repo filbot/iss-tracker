@@ -58,7 +58,7 @@ class Settings:
             iss_api_url=os.getenv("ISS_API_URL", "https://api.wheretheiss.at/v1/satellites/25544"),
             display_width=int(os.getenv("EPD_WIDTH", "128")),
             display_height=int(os.getenv("EPD_HEIGHT", "250")),
-            display_has_red=_as_bool(os.getenv("EPD_HAS_RED", "true"), default=True),
+            display_has_red=_as_bool(os.getenv("EPD_HAS_RED", "false"), default=False),
             display_logical_width=int(os.getenv("EPD_LOGICAL_WIDTH", "122")),
             display_pad_left=int(os.getenv("EPD_PAD_LEFT", "3")),
             display_pad_right=int(os.getenv("EPD_PAD_RIGHT", "3")),

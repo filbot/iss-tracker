@@ -9,8 +9,8 @@ from typing import Optional, Protocol
 
 from PIL import Image
 
-try:
-    from waveshare_epd import epd2in13b_V4 as _waveshare_module  # type: ignore
+try:  # pragma: no cover - hardware import optional
+    import epd2in13 as _waveshare_module  # type: ignore
 except Exception:  # pragma: no cover - hardware import optional
     _waveshare_module = None
 
@@ -26,36 +26,48 @@ class DisplayDriver(Protocol):
 
 
 class WaveshareDriver:
-    """Thin wrapper around the official waveshare_epd driver."""
+    """Adapter around the vendor-supplied epd2in13.py module."""
 
     def __init__(self, width: int, height: int, *, has_red: bool) -> None:
         if _waveshare_module is None:
-            raise RuntimeError("waveshare_epd package not available; re-run with --preview-only or install the vendor driver")
+            raise RuntimeError(
+                "epd2in13 driver is unavailable; ensure vendor dependencies are installed or use --preview-only"
+            )
 
         self.width = width
         self.height = height
         self.has_red = has_red
-        self._byte_length = (width * height) // 8
-        self._blank_red = bytes([0xFF] * self._byte_length)
+        self._warned_red_drop = False
+        self._expected_length = (width * height) // 8
         self._epd = _waveshare_module.EPD()
 
-        LOGGER.info("Initializing epd2in13b_V4 panel")
-        self._epd.init()
+        self._hardware_length = ((self._epd.width + 7) // 8) * self._epd.height
+        if self._expected_length != self._hardware_length:
+            LOGGER.warning(
+                "Configured frame buffer length (%s) does not match hardware expectation (%s); proceeding with hardware values",
+                self._expected_length,
+                self._hardware_length,
+            )
+
+        LOGGER.info("Initializing epd2in13 panel")
+        if self._epd.init(self._epd.lut_full_update) != 0:
+            raise RuntimeError("Failed to initialize epd2in13 panel")
         self._epd.Clear()
 
     def display_frame(self, red: bytes, black: bytes, *, image: Optional[Image.Image] = None) -> None:
-        self._validate_length(black, "black")
-        if self.has_red:
-            self._validate_length(red, "red")
-            red_payload = bytearray(red)
-        else:
-            red_payload = bytearray(self._blank_red)
-        black_payload = bytearray(black)
-        self._epd.display(black_payload, red_payload)
+        if self.has_red and not self._warned_red_drop:
+            LOGGER.warning("epd2in13 is monochrome; red bitplane will be rendered as black")
+            self._warned_red_drop = True
 
-    def _validate_length(self, payload: bytes, label: str) -> None:
-        if len(payload) != self._byte_length:
-            raise ValueError(f"{label} buffer must be {self._byte_length} bytes, got {len(payload)}")
+        if self.has_red:
+            self._validate_length(red, "red", expected=self._hardware_length)
+        self._validate_length(black, "black", expected=self._hardware_length)
+        payload = bytearray(black)
+        self._epd.display(payload)
+
+    def _validate_length(self, payload: bytes, label: str, *, expected: int) -> None:
+        if len(payload) != expected:
+            raise ValueError(f"{label} buffer must be {expected} bytes, got {len(payload)}")
 
     def close(self) -> None:
         try:
@@ -90,12 +102,12 @@ def build_driver(*, preview_only: bool, preview_dir: Path, width: int, height: i
 
     if _waveshare_module is None:
         LOGGER.warning(
-            "waveshare_epd package not available; defaulting to preview driver. Install the vendor driver or rerun with --preview-only"
+            "epd2in13 vendor driver not importable; defaulting to preview mode. Install the Waveshare dependencies or rerun with --preview-only"
         )
         return PreviewDriver(preview_dir=preview_dir, width=width, height=height)
 
     try:
         return WaveshareDriver(width=width, height=height, has_red=has_red)
     except RuntimeError:
-        LOGGER.warning("Failed to initialize hardware driver; falling back to preview mode", exc_info=True)
+        LOGGER.warning("Failed to initialize epd2in13 hardware; falling back to preview mode", exc_info=True)
         return PreviewDriver(preview_dir=preview_dir, width=width, height=height)
