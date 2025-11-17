@@ -8,7 +8,8 @@ SYSTEMD_UNIT ?= $(INSTALL_DIR)/systemd/iss-display.service
 VENV := $(INSTALL_DIR)/.venv
 ENV_FILE := $(INSTALL_DIR)/.env
 TMP_UNIT := /tmp/$(SERVICE_NAME)
-APT_PACKAGES := python3-venv git gettext-base libssl-dev libcurl4-openssl-dev
+APT_PACKAGES := python3-venv git gettext-base libssl-dev libcurl4-openssl-dev \
+	libopenblas0 libopenblas-dev liblapack-dev
 BUILD_TMP_DIR ?= $(INSTALL_DIR)/.build
 PIP_TMPDIR := $(BUILD_TMP_DIR)/pip-tmp
 PIP_CACHE_DIR := $(BUILD_TMP_DIR)/pip-cache

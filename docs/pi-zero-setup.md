@@ -19,14 +19,15 @@ This guide walks through deploying the ISS display entirely on a Raspberry Pi Ze
    sudo reboot
    ```
 
-3. Install the base packages (git, Python tooling, runtime libs Pillow needs, and system services). This command installs everything `make deploy` expects so the later steps do not prompt for missing dependencies:
+3. Install the base packages (git, Python tooling, BLAS/LAPACK + Pillow runtime libs, and system services). This command installs everything `make deploy` expects so the later steps do not prompt for missing dependencies:
 
    ```bash
    sudo apt install -y \
      git python3 python3-venv python3-pip python3-dev build-essential pkg-config \
-     libssl-dev libcurl4-openssl-dev libjpeg-dev zlib1g-dev libopenjp2-7 libopenjp2-7-dev \
-     libtiff-dev libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev libxcb1 \
-     gettext-base
+       libssl-dev libcurl4-openssl-dev \
+       libjpeg-dev zlib1g-dev libopenjp2-7 libopenjp2-7-dev libtiff-dev libfreetype6-dev \
+       liblcms2-dev libwebp-dev libharfbuzz-dev libfribidi-dev libxcb1 gettext-base \
+       libopenblas0 libopenblas-dev liblapack-dev
    ```
 
 ## 2. Clone the Repository
