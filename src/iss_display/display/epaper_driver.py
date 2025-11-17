@@ -102,8 +102,7 @@ class HardwareEpaperDriver:
         LOGGER.info("Initial BUSY pin (GPIO %d) state: %s", self.pins.busy, "HIGH" if initial_busy else "LOW")
 
         self._reset_with_retry()
-        self._command(0x12)  # soft reset
-        self._wait(stage="post-soft-reset")
+        self._full_init()
 
     # --- Low-level helpers -------------------------------------------------
     def _wait(self, *, stage: str, timeout: float = 30.0) -> None:
@@ -163,6 +162,61 @@ class HardwareEpaperDriver:
         time.sleep(0.2)
         LOGGER.debug("Waiting for BUSY pin to indicate ready state")
         self._wait(stage="panel-reset")
+    
+    def _full_init(self) -> None:
+        """Full initialization sequence for 2.13" V4 display."""
+        LOGGER.debug("Starting full display initialization")
+        
+        # Software reset
+        self._command(0x12)
+        self._wait(stage="post-soft-reset")
+        
+        # Driver output control
+        self._command(0x01)
+        self._data(0xF9)  # Height - 1 (250-1=249=0xF9)
+        self._data(0x00)
+        self._data(0x00)
+        
+        # Data entry mode
+        self._command(0x11)
+        self._data(0x03)  # X increment, Y increment
+        
+        # Set RAM X start/end positions
+        self._command(0x44)
+        self._data(0x00)
+        self._data(0x0F)  # 15 (16*8-1 = 127 for width 122)
+        
+        # Set RAM Y start/end positions
+        self._command(0x45)
+        self._data(0x00)
+        self._data(0x00)
+        self._data(0xF9)  # 249
+        self._data(0x00)
+        
+        # Border waveform control
+        self._command(0x3C)
+        self._data(0x05)
+        
+        # Display update control
+        self._command(0x21)
+        self._data(0x00)
+        self._data(0x80)
+        
+        # Temperature sensor
+        self._command(0x18)
+        self._data(0x80)
+        
+        # Set RAM X counter
+        self._command(0x4E)
+        self._data(0x00)
+        
+        # Set RAM Y counter
+        self._command(0x4F)
+        self._data(0x00)
+        self._data(0x00)
+        
+        self._wait(stage="post-init")
+        LOGGER.info("Display initialization complete")
 
     def _transfer_bytes(self, payload: bytes) -> None:
         if not payload:
@@ -195,17 +249,16 @@ class HardwareEpaperDriver:
         self._update()
 
     def _write_channel(self, command: int, payload: bytes) -> None:
-        self._wait(stage=f"pre-command 0x{command:02X}")
         self._command(command)
         GPIO.output(self.pins.dc, GPIO.HIGH)
         self._transfer_bytes(payload)
 
     def _update(self) -> None:
-        self._command(0x20)
+        """Trigger display update."""
+        self._command(0x22)  # Display Update Control 2
+        self._data(0xF7)     # Enable clock signal, enable CP, load temperature value, load LUT, display pattern
+        self._command(0x20)  # Master Activation (trigger update)
         self._wait(stage="display-refresh")
-        self._command(0x10)
-        self._data(0x01)
-        time.sleep(0.1)
 
     def clear(self) -> None:
         """Clear the display to white."""
