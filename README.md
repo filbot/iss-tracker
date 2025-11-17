@@ -19,6 +19,7 @@ Self-contained Python application that fetches live ISS telemetry, downloads the
 - Python 3.10+
 - System packages: `libopenjp2-7`, `libtiff6`, etc. (installed automatically on Raspberry Pi OS).
 - Python dependencies listed in `requirements.txt` (install via `pip install -r requirements.txt`).
+- Optional but recommended: Waveshare's `waveshare_epd` Python driver (`pip install waveshare-epd` or add their `python/lib` folder to `PYTHONPATH`) so the app can reuse the proven hardware init sequence.
 
 ### Environment Variables
 Create a `.env` file in the repo root or export the variables manually (see `.env.example` for defaults):

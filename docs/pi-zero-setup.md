@@ -63,7 +63,7 @@ PIP_INDEX_URL=https://www.piwheels.org/simple/ pip install -r requirements.txt
 deactivate
 ```
 
-> Using `PIP_INDEX_URL` here means `pip` downloads prebuilt armv6 wheels whenever available. The process still takes a few minutes on a Zero but avoids the multi-hour compile times.
+> Using `PIP_INDEX_URL` here means `pip` downloads prebuilt armv6 wheels whenever available. The process still takes a few minutes on a Zero but avoids the multi-hour compile times. Install Waveshare's Python driver as well (`pip install waveshare-epd` or add their `python/lib` directory to `PYTHONPATH`) so the hardware path can reuse the official refresh sequence.
 
 ## 5. Deploy via Makefile
 

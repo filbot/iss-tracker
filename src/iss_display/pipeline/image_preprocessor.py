@@ -46,7 +46,11 @@ class FrameEncoder:
         red_mask = self._is_red(data) if self.has_red else np.zeros((self.height, self.width), dtype=bool)
         white_mask = self._is_white(data, red_mask)
 
-        red_buffer = self._pack_mask(red_mask) if self.has_red else bytes(self.byte_length)
+        if self.has_red:
+            # Waveshare buffers encode white pixels as 1s; flip the mask so red pixels clear bits.
+            red_buffer = self._pack_mask(np.logical_not(red_mask))
+        else:
+            red_buffer = bytes([0xFF]) * self.byte_length
         # Datasheet expects white pixels to be set to 1 in the black channel.
         black_buffer = self._pack_mask(white_mask)
 

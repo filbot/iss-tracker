@@ -20,6 +20,11 @@ except Exception:  # pragma: no cover - desktop environments will not have these
     _spidev = None
     _GPIO = None
 
+try:  # Prefer the official Waveshare driver when available.
+    from waveshare_epd import epd2in13b_V4 as _waveshare_module  # type: ignore
+except Exception:  # pragma: no cover - deployment without the vendor package falls back to custom SPI.
+    _waveshare_module = None
+
 spidev: Any = _spidev
 GPIO: Any = _GPIO
 
@@ -283,6 +288,55 @@ class HardwareEpaperDriver:
         self.close()
 
 
+class WaveshareEpaperDriver:
+    """Thin wrapper around Waveshare's reference driver.
+
+    Delegating to the vendor driver ensures the initialization sequence, refresh
+    waveform, and busy timing exactly match the working demo script the user provided.
+    """
+
+    def __init__(self, width: int, height: int, *, has_red: bool = True) -> None:
+        if _waveshare_module is None:
+            raise RuntimeError("waveshare_epd package not available")
+
+        self.width = width
+        self.height = height
+        self.has_red = has_red
+        self._row_bytes = (width + 7) // 8
+        self._byte_length = self._row_bytes * height
+        self._epd = _waveshare_module.EPD()
+        self._blank_red = bytearray([0xFF] * self._byte_length)
+
+        LOGGER.info("Initializing waveshare_epd.epd2in13b_V4 driver")
+        self._epd.init()
+        self._epd.Clear()
+
+    def _ensure_length(self, payload: bytes, label: str) -> None:
+        if len(payload) != self._byte_length:
+            raise ValueError(f"{label} buffer must be {self._byte_length} bytes, got {len(payload)}")
+
+    def _buffer(self, payload: bytes | bytearray) -> bytearray:
+        return payload if isinstance(payload, bytearray) else bytearray(payload)
+
+    def display_frame(self, red: bytes, black: bytes, *, image: Optional[Image.Image] = None) -> None:
+        self._ensure_length(black, "black")
+        if self.has_red:
+            self._ensure_length(red, "red")
+            red_payload = self._buffer(red)
+        else:
+            red_payload = self._blank_red
+        black_payload = self._buffer(black)
+
+        # The vendor API expects black first, red second just like the sample script.
+        self._epd.display(black_payload, red_payload)
+
+    def close(self) -> None:
+        try:
+            self._epd.sleep()
+        except Exception:  # pragma: no cover - hardware only
+            LOGGER.exception("Failed to put e-paper panel into deep sleep")
+
+
 class PreviewDriver:
     """Driver that writes preview PNGs instead of talking to hardware."""
 
@@ -307,6 +361,12 @@ def build_driver(*, preview_only: bool, preview_dir: Path, width: int, height: i
 
     if preview_only:
         return PreviewDriver(preview_dir=preview_dir, width=width, height=height)
+
+    if _waveshare_module is not None:
+        try:
+            return WaveshareEpaperDriver(width=width, height=height, has_red=has_red)
+        except Exception as exc:  # pragma: no cover - hardware-only path
+            LOGGER.warning("waveshare_epd driver init failed, falling back to SPI implementation: %s", exc)
 
     try:
         return HardwareEpaperDriver(width=width, height=height, has_red=has_red)
