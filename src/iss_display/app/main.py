@@ -13,7 +13,6 @@ from iss_display.config import Settings
 from iss_display.data.iss_client import ISSClient
 from iss_display.data.mapbox_client import MapboxClient
 from iss_display.display.epaper_driver import build_driver
-from iss_display.display.led import build_led_controller
 from iss_display.pipeline.image_preprocessor import FrameEncoder
 from iss_display.pipeline.layout import FrameLayout
 
@@ -48,8 +47,7 @@ def build_scheduler(settings: Settings, *, preview_only: bool | None = None) -> 
         height=settings.display_height,
         has_red=settings.display_has_red,
     )
-    led_controller = build_led_controller(settings.led_enabled, settings.led_pin)
-    return DisplayScheduler(settings, iss_client, mapbox_client, layout, encoder, driver, led_controller)
+    return DisplayScheduler(settings, iss_client, mapbox_client, layout, encoder, driver)
 
 
 def cmd_refresh(settings: Settings, args: argparse.Namespace) -> None:

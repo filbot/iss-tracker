@@ -51,8 +51,6 @@ def make_settings(tmp_path: Path) -> Settings:
         display_logical_width=122,
         display_pad_left=3,
         display_pad_right=3,
-        led_enabled=False,
-        led_pin=12,
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
         preview_dir=tmp_path / "preview",

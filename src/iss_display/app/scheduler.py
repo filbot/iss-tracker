@@ -12,7 +12,6 @@ from iss_display.config import Settings
 from iss_display.data.iss_client import ISSClient, ISSFix
 from iss_display.data.mapbox_client import MapboxClient
 from iss_display.display.epaper_driver import DisplayDriver
-from iss_display.display.led import LEDController
 from iss_display.pipeline.image_preprocessor import FrameEncoder
 from iss_display.pipeline.layout import FrameLayout
 
@@ -28,7 +27,6 @@ class DisplayScheduler:
         layout: FrameLayout,
         encoder: FrameEncoder,
         driver: DisplayDriver,
-        led: LEDController | None = None,
     ) -> None:
         self._settings = settings
         self._iss_client = iss_client
@@ -36,7 +34,6 @@ class DisplayScheduler:
         self._layout = layout
         self._encoder = encoder
         self._driver = driver
-        self._led = led
 
     def build_frame(self, *, force: bool = False) -> Tuple[bytes, bytes, Image.Image]:
         fix = self._iss_client.get_fix(force=force or self._settings.force_refresh)
@@ -51,14 +48,8 @@ class DisplayScheduler:
 
     def refresh_once(self, *, force: bool = False) -> None:
         LOGGER.info("Refreshing display frame")
-        if self._led:
-            self._led.set_busy(True)
-        try:
-            red, black, canvas = self.build_frame(force=force)
-            self._driver.display_frame(red, black, image=canvas)
-        finally:
-            if self._led:
-                self._led.set_busy(False)
+        red, black, canvas = self.build_frame(force=force)
+        self._driver.display_frame(red, black, image=canvas)
 
     def run_forever(self) -> None:
         LOGGER.info("Starting scheduler loop with %s second cadence", self._settings.iss_poll_interval)
@@ -71,5 +62,3 @@ class DisplayScheduler:
 
     def close(self) -> None:
         self._driver.close()
-        if self._led:
-            self._led.close()

@@ -39,8 +39,6 @@ class Settings:
     display_logical_width: int
     display_pad_left: int
     display_pad_right: int
-    led_enabled: bool
-    led_pin: int
     cache_dir: Path
     state_dir: Path
     preview_dir: Path
@@ -83,8 +81,6 @@ class Settings:
             display_logical_width=int(os.getenv("EPD_LOGICAL_WIDTH", "122")),
             display_pad_left=int(os.getenv("EPD_PAD_LEFT", "3")),
             display_pad_right=int(os.getenv("EPD_PAD_RIGHT", "3")),
-            led_enabled=os.getenv("LED_ENABLED", "false").lower() in {"1", "true", "yes"},
-            led_pin=int(os.getenv("LED_PIN", "12")),
             cache_dir=cache_dir,
             state_dir=state_dir,
             preview_dir=preview_dir,

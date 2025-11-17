@@ -7,7 +7,6 @@ Self-contained Python application that fetches live ISS telemetry, downloads the
 - ISS telemetry client supporting both `wheretheiss.at` and `open-notify` schemas with local state caching.
 - Image processing pipeline that draws overlays and converts frames to the panel’s red/black bitplanes.
 - Hardware abstraction layer with automatic fallback to preview PNGs when SPI/GPIO modules are unavailable.
-- Optional GPIO heartbeat LED that pulses between updates and flashes rapidly during refreshes.
 - CLI with single-run, daemon, cache-only, and test-pattern modes.
 - Pytest suite covering the critical data pipeline bits.
 
@@ -46,8 +45,6 @@ EPD_WIDTH=128
 EPD_LOGICAL_WIDTH=122
 EPD_PAD_LEFT=3
 EPD_PAD_RIGHT=3
-LED_ENABLED=false
-LED_PIN=12
 ```
 
 Directories used for cache/preview/state default to `var/cache`, `var/previews`, and `var/state`. Override via `ISS_CACHE_DIR`, `ISS_PREVIEW_DIR`, `ISS_STATE_DIR` if desired.
@@ -119,11 +116,6 @@ This setup boots the Pi Zero into the display loop automatically, keeps the virt
 4. **Tri-color conversion** – Pixels near the pin color are routed to the red plane; remaining pixels are thresholded into black/white masks, yielding the two bitplanes required by the GeekPi 2.13" tri-color panel.
 5. **Caching & graceful fallback** – Tiles are stored under `var/cache/tiles/<style>/<zoom>/` and re-used whenever the ISS stays within the configured radius; processed portraits are cached separately, and if the Static Tiles endpoint ever errors out the app replays the legacy Static Images URL to keep frames flowing without exceeding quotas.
 
-### Optional Heartbeat LED
-- Wire an LED + resistor to any BCM GPIO pin (default `GPIO12`) and ground.
-- Set `LED_ENABLED=true` in `.env` and, if necessary, change `LED_PIN` to match your wiring.
-- During idle periods the LED mimics the legacy shell script by pulsing with random on/off times (roughly 50–200 ms on, 50–550 ms off) for a soft heartbeat. When the display refresh starts the LED switches to a tight 50 ms strobe until the update completes, then smoothly returns to the heartbeat pattern.
-- If the app can’t import `RPi.GPIO` (e.g., when running on a laptop), it automatically disables the LED and logs a warning.
 
 ### Makefile Automation
 For repeat deployments, take advantage of the provided `Makefile` targets (`INSTALL_DIR` defaults to the currently checked-out repo and `PI_USER` auto-detects the invoking user—override either if you need a different path or service account):
