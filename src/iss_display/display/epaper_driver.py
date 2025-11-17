@@ -83,7 +83,7 @@ class HardwareEpaperDriver:
         GPIO.setup(self.pins.dc, GPIO.OUT)
         GPIO.setup(self.pins.busy, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-        self._reset()
+        self._reset_with_retry()
         self._command(0x12)  # soft reset
         self._wait(stage="post-soft-reset")
 
@@ -104,7 +104,26 @@ class HardwareEpaperDriver:
         GPIO.output(self.pins.dc, GPIO.HIGH)
         self.spi.xfer([value & 0xFF])
 
-    def _reset(self) -> None:
+    def _reset_with_retry(self, attempts: int = 3) -> None:
+        last_error: BusyWaitTimeout | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                self._reset_once()
+                return
+            except BusyWaitTimeout as exc:
+                last_error = exc
+                LOGGER.warning(
+                    "Panel reset attempt %s/%s failed (%s); retrying",
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                time.sleep(1.0)
+        if last_error:
+            LOGGER.error("All panel reset attempts failed; giving up")
+            raise last_error
+
+    def _reset_once(self) -> None:
         GPIO.output(self.pins.reset, GPIO.LOW)
         time.sleep(0.1)
         GPIO.output(self.pins.reset, GPIO.HIGH)
