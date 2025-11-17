@@ -53,8 +53,8 @@ def describe_groundtrack(latitude: float, longitude: float) -> str:
     lon = _normalize_longitude(longitude)
     for region in REGION_BANDS:
         if region.contains(latitude, lon):
-            return f"Somewhere over {region.label}"
-    return "Somewhere over open ocean"
+            return region.label
+    return "the open ocean"
 
 
 class FrameLayout:
@@ -115,7 +115,8 @@ class FrameLayout:
         draw.multiline_text((padding + 2, padding + 2), text, fill="black", font=self.font)
 
     def _draw_footer(self, draw: ImageDraw.ImageDraw, fix: ISSFix) -> None:
-        text = describe_groundtrack(fix.latitude, fix.longitude)
+        location = describe_groundtrack(fix.latitude, fix.longitude)
+        text = f"Somewhere over\n{location}"
         text_width, text_height = self._measure_multiline(draw, text)
         padding_x = 10
         padding_y = 4
@@ -127,7 +128,7 @@ class FrameLayout:
         y1 = self.height - bottom_margin
         y0 = max(0, y1 - total_height)
         draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 255, 200))
-        draw.text((x0 + padding_x, y0 + padding_y), text, fill="black", font=self.font)
+        draw.multiline_text((x0 + padding_x, y0 + padding_y), text, fill="black", font=self.font, align="center")
 
     def _measure_multiline(self, draw: ImageDraw.ImageDraw, text: str) -> tuple[int, int]:
         try:
