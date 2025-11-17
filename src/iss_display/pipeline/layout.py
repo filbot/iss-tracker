@@ -53,7 +53,7 @@ class FrameLayout:
 
         text = "\n".join(text_lines)
         padding = 6
-        text_width, text_height = draw.multiline_textsize(text, font=self.font)
+        text_width, text_height = self._measure_multiline(draw, text)
         box = [
             padding,
             padding,
@@ -62,3 +62,10 @@ class FrameLayout:
         ]
         draw.rectangle(box, fill=(255, 255, 255, 200))
         draw.multiline_text((padding + 2, padding + 2), text, fill="black", font=self.font)
+
+    def _measure_multiline(self, draw: ImageDraw.ImageDraw, text: str) -> tuple[int, int]:
+        try:
+            bbox = draw.multiline_textbbox((0, 0), text, font=self.font)
+            return bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except AttributeError:  # Pillow < 8.0 fallback
+            return draw.multiline_textsize(text, font=self.font)
