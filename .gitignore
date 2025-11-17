@@ -17,3 +17,4 @@ var/
 
 # macOS cruft
 .DS_Store
+scripts/

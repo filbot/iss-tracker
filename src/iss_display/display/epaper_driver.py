@@ -85,9 +85,12 @@ class HardwareEpaperDriver:
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        GPIO.setup(self.pins.reset, GPIO.OUT)
+        GPIO.setup(self.pins.reset, GPIO.OUT, initial=GPIO.HIGH)  # Start with reset deasserted
         GPIO.setup(self.pins.dc, GPIO.OUT)
         GPIO.setup(self.pins.busy, GPIO.IN)
+        
+        # Give display a moment to come out of reset if it was held low
+        time.sleep(0.1)
         
         # Log initial BUSY pin state for diagnostics
         initial_busy = GPIO.input(self.pins.busy)
