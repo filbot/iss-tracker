@@ -9,8 +9,8 @@ def test_encoder_bit_lengths(tmp_path: Path) -> None:
     width, height = 128, 250
     logical_width = 122
     encoder = FrameEncoder(
-        width,
-        height,
+        width=width,
+        height=height,
         has_red=True,
         logical_width=logical_width,
         pad_left=3,

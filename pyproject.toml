@@ -7,17 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0.0",
     "requests>=2.32.0",
-    "python-dotenv>=1.0.0",
-    "numpy>=1.26.0"
-]
-
-[project.optional-dependencies]
-hw = [
-    "spidev",
-    "RPi.GPIO"
-]
-dev = [
-    "pytest>=8.0.0"
+    "python-dotenv>=1.0.0"
 ]
 
 dynamic = ["readme"]
