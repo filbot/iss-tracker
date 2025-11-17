@@ -76,7 +76,7 @@ class Settings:
             portrait_trim_right=int(os.getenv("PORTRAIT_TRIM_RIGHT", "3")),
             pin_color=os.getenv("MAP_PIN_COLOR", "#ED1C24"),
             iss_api_url=os.getenv("ISS_API_URL", "https://api.wheretheiss.at/v1/satellites/25544"),
-            iss_poll_interval=int(os.getenv("ISS_POLL_INTERVAL", "10")),
+            iss_poll_interval=int(os.getenv("ISS_POLL_INTERVAL", "60")),
             display_width=int(os.getenv("EPD_WIDTH", "128")),
             display_height=int(os.getenv("EPD_HEIGHT", "250")),
             display_has_red=os.getenv("EPD_HAS_RED", "true").lower() in {"1", "true", "yes"},

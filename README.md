@@ -40,6 +40,7 @@ PORTRAIT_TRIM_LEFT=3
 PORTRAIT_TRIM_RIGHT=3
 MAP_PIN_COLOR=#ED1C24
 ISS_API_URL=https://api.wheretheiss.at/v1/satellites/25544
+ISS_POLL_INTERVAL=60
 EPD_PREVIEW_ONLY=false  # set true for development without hardware
 EPD_WIDTH=128
 EPD_LOGICAL_WIDTH=122

@@ -44,7 +44,7 @@ def make_settings(tmp_path: Path) -> Settings:
         portrait_trim_right=3,
         pin_color="#ED1C24",
         iss_api_url="https://example.com",
-        iss_poll_interval=10,
+        iss_poll_interval=60,
         display_width=128,
         display_height=250,
         display_has_red=True,
