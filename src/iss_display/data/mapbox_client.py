@@ -92,9 +92,7 @@ class MapboxClient:
             cached_path = self._state.get("current_portrait_path")
             if cached_path and Path(cached_path).exists():
                 with Image.open(cached_path) as cached:
-                    image = cached.convert("RGB").copy()
-                self._record_portrait_usage(lat, lon, Path(cached_path))
-                return image
+                    return cached.convert("RGB").copy()
 
         address = self._tile_address(lat, lon)
         portrait_cache = self._portrait_cache_path(address)
