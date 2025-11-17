@@ -28,12 +28,12 @@ def main():
         # Configure pins
         GPIO.setup(RESET_PIN, GPIO.OUT)
         GPIO.setup(DC_PIN, GPIO.OUT)
-        GPIO.setup(BUSY_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(BUSY_PIN, GPIO.IN)  # No pull-up - HAT has hardware pull-up
         
         print(f"\n1. Initial Pin States:")
         print(f"   RESET (GPIO {RESET_PIN}): Configured as OUTPUT")
         print(f"   DC    (GPIO {DC_PIN}): Configured as OUTPUT")
-        print(f"   BUSY  (GPIO {BUSY_PIN}): Configured as INPUT with PULLUP")
+        print(f"   BUSY  (GPIO {BUSY_PIN}): Configured as INPUT (hardware pull-up on HAT)")
         
         # Read BUSY pin
         busy_state = GPIO.input(BUSY_PIN)

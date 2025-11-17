@@ -87,7 +87,7 @@ class HardwareEpaperDriver:
         GPIO.setwarnings(False)
         GPIO.setup(self.pins.reset, GPIO.OUT)
         GPIO.setup(self.pins.dc, GPIO.OUT)
-        GPIO.setup(self.pins.busy, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(self.pins.busy, GPIO.IN)
         
         # Log initial BUSY pin state for diagnostics
         initial_busy = GPIO.input(self.pins.busy)
