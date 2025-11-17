@@ -67,5 +67,26 @@ class FrameLayout:
         try:
             bbox = draw.multiline_textbbox((0, 0), text, font=self.font)
             return bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except AttributeError:  # Pillow < 8.0 fallback
-            return draw.multiline_textsize(text, font=self.font)
+        except AttributeError:  # Newer Pillow only exposes multiline_textbbox
+            return self._approximate_multiline(text)
+
+    def _approximate_multiline(self, text: str) -> tuple[int, int]:
+        lines = text.split("\n") or [""]
+        max_width = 0
+        total_height = 0
+        ascent = descent = 0
+        if hasattr(self.font, "getmetrics"):
+            ascent, descent = self.font.getmetrics()
+        line_height = ascent + descent if ascent or descent else None
+
+        for line in lines:
+            if hasattr(self.font, "getbbox"):
+                bbox = self.font.getbbox(line)
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+            else:
+                width, height = self.font.getsize(line)
+            max_width = max(max_width, width)
+            total_height += line_height or height
+
+        return max_width, total_height
