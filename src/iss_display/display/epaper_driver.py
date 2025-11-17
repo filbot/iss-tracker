@@ -47,7 +47,7 @@ class BusyWaitTimeout(TimeoutError):
     """Raised when the BUSY pin never releases within the allotted timeout."""
 
     def __init__(self, stage: str, timeout: float) -> None:
-        super().__init__(f"E-paper busy pin remained high during {stage} for {timeout:.1f}s")
+        super().__init__(f"E-paper busy pin remained low during {stage} for {timeout:.1f}s")
         self.stage = stage
         self.timeout = timeout
 
@@ -90,9 +90,9 @@ class HardwareEpaperDriver:
     # --- Low-level helpers -------------------------------------------------
     def _wait(self, *, stage: str, timeout: float = 120.0) -> None:
         deadline = time.monotonic() + timeout
-        while GPIO.input(self.pins.busy) == GPIO.HIGH:
+        while GPIO.input(self.pins.busy) == GPIO.LOW:
             if time.monotonic() >= deadline:
-                LOGGER.error("Busy pin stuck high during %s", stage)
+                LOGGER.error("Busy pin stuck low during %s", stage)
                 raise BusyWaitTimeout(stage, timeout)
             time.sleep(0.05)
 
@@ -170,7 +170,6 @@ class HardwareEpaperDriver:
         self._command(0x10)
         self._data(0x01)
         time.sleep(0.1)
-        self._wait(stage="post-deep-sleep")
 
     def clear(self) -> None:
         """Clear the display to white."""
