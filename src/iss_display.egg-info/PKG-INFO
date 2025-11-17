@@ -9,7 +9,8 @@ Requires-Dist: Pillow>=10.0.0
 Requires-Dist: requests>=2.32.0
 Requires-Dist: python-dotenv>=1.0.0
 Requires-Dist: numpy>=1.26.0
-Requires-Dist: apscheduler>=3.10.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
 Provides-Extra: hw
 Requires-Dist: spidev; extra == "hw"
 Requires-Dist: RPi.GPIO; extra == "hw"

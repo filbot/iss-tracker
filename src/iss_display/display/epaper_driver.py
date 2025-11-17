@@ -77,22 +77,39 @@ class HardwareEpaperDriver:
         self.spi.max_speed_hz = max_speed_hz
         self.spi.mode = 0b00
 
+        # Clean up any previous GPIO state
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup(self.pins.reset, GPIO.OUT)
         GPIO.setup(self.pins.dc, GPIO.OUT)
         GPIO.setup(self.pins.busy, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        
+        # Log initial BUSY pin state for diagnostics
+        initial_busy = GPIO.input(self.pins.busy)
+        LOGGER.info("Initial BUSY pin (GPIO %d) state: %s", self.pins.busy, "HIGH" if initial_busy else "LOW")
 
         self._reset_with_retry()
         self._command(0x12)  # soft reset
         self._wait(stage="post-soft-reset")
 
     # --- Low-level helpers -------------------------------------------------
-    def _wait(self, *, stage: str, timeout: float = 120.0) -> None:
-        deadline = time.monotonic() + timeout
+    def _wait(self, *, stage: str, timeout: float = 30.0) -> None:
+        """Wait for BUSY pin to go HIGH. Reduced timeout for faster failure."""
+        start = time.monotonic()
+        deadline = start + timeout
         while GPIO.input(self.pins.busy) == GPIO.LOW:
+            elapsed = time.monotonic() - start
             if time.monotonic() >= deadline:
-                LOGGER.error("Busy pin stuck low during %s", stage)
+                LOGGER.error(
+                    "Busy pin (GPIO %d) stuck LOW during %s after %.1fs. "
+                    "Check hardware connection and display power.",
+                    self.pins.busy, stage, elapsed
+                )
                 raise BusyWaitTimeout(stage, timeout)
             time.sleep(0.05)
 
@@ -124,10 +141,13 @@ class HardwareEpaperDriver:
             raise last_error
 
     def _reset_once(self) -> None:
+        """Hardware reset sequence for the e-paper display."""
+        LOGGER.debug("Starting hardware reset sequence")
         GPIO.output(self.pins.reset, GPIO.LOW)
-        time.sleep(0.1)
+        time.sleep(0.2)  # Longer low pulse
         GPIO.output(self.pins.reset, GPIO.HIGH)
-        time.sleep(0.1)
+        time.sleep(0.5)  # Give panel more time to initialize
+        LOGGER.debug("Waiting for BUSY pin to indicate ready state")
         self._wait(stage="panel-reset")
 
     def _transfer_bytes(self, payload: bytes) -> None:

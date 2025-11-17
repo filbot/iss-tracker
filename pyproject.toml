@@ -16,6 +16,9 @@ hw = [
     "spidev",
     "RPi.GPIO"
 ]
+dev = [
+    "pytest>=8.0.0"
+]
 
 dynamic = ["readme"]
 
