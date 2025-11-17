@@ -85,5 +85,17 @@ class PreviewDriver:
 
 def build_driver(*, preview_only: bool, preview_dir: Path, width: int, height: int, has_red: bool) -> DisplayDriver:
     if preview_only:
+        LOGGER.info("preview-only mode enabled; writing PNG output to %s", preview_dir)
         return PreviewDriver(preview_dir=preview_dir, width=width, height=height)
-    return WaveshareDriver(width=width, height=height, has_red=has_red)
+
+    if _waveshare_module is None:
+        LOGGER.warning(
+            "waveshare_epd package not available; defaulting to preview driver. Install the vendor driver or rerun with --preview-only"
+        )
+        return PreviewDriver(preview_dir=preview_dir, width=width, height=height)
+
+    try:
+        return WaveshareDriver(width=width, height=height, has_red=has_red)
+    except RuntimeError:
+        LOGGER.warning("Failed to initialize hardware driver; falling back to preview mode", exc_info=True)
+        return PreviewDriver(preview_dir=preview_dir, width=width, height=height)
