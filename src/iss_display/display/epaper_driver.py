@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ except Exception:  # pragma: no cover - desktop environments will not have these
 spidev: Any = _spidev
 GPIO: Any = _GPIO
 
+LOGGER = logging.getLogger(__name__)
+
 
 class DisplayDriver(Protocol):
     """Protocol implemented by all display drivers."""
@@ -33,11 +36,20 @@ class DisplayDriver(Protocol):
         ...
 
 
-@dataclass
+@dataclass(frozen=True)
 class DriverPins:
     reset: int = 17
     dc: int = 25
     busy: int = 24
+
+
+class BusyWaitTimeout(TimeoutError):
+    """Raised when the BUSY pin never releases within the allotted timeout."""
+
+    def __init__(self, stage: str, timeout: float) -> None:
+        super().__init__(f"E-paper busy pin remained low during {stage} for {timeout:.1f}s")
+        self.stage = stage
+        self.timeout = timeout
 
 
 class HardwareEpaperDriver:
@@ -58,10 +70,12 @@ class HardwareEpaperDriver:
         self.height = height
         self.has_red = has_red
         self.pins = pins or DriverPins()
+        self._chunk_size = 4096
 
         self.spi = spidev.SpiDev()
         self.spi.open(0, 0)
         self.spi.max_speed_hz = max_speed_hz
+        self.spi.mode = 0b00
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -71,14 +85,15 @@ class HardwareEpaperDriver:
 
         self._reset()
         self._command(0x12)  # soft reset
-        self._wait()
+        self._wait(stage="post-soft-reset")
 
     # --- Low-level helpers -------------------------------------------------
-    def _wait(self, timeout: float = 120.0) -> None:
+    def _wait(self, *, stage: str, timeout: float = 120.0) -> None:
         deadline = time.monotonic() + timeout
         while GPIO.input(self.pins.busy) == GPIO.LOW:
             if time.monotonic() >= deadline:
-                raise TimeoutError("E-paper busy pin remained low for too long")
+                LOGGER.error("Busy pin stuck low during %s", stage)
+                raise BusyWaitTimeout(stage, timeout)
             time.sleep(0.05)
 
     def _command(self, value: int) -> None:
@@ -94,7 +109,20 @@ class HardwareEpaperDriver:
         time.sleep(0.1)
         GPIO.output(self.pins.reset, GPIO.HIGH)
         time.sleep(0.1)
-        self._wait()
+        self._wait(stage="panel-reset")
+
+    def _transfer_bytes(self, payload: bytes) -> None:
+        if not payload:
+            return
+        view = memoryview(payload)
+        chunk_size = self._chunk_size
+        offset = 0
+        while offset < len(view):
+            chunk = view[offset : offset + chunk_size]
+            # spi.xfer2 expects a sequence of ints; chunk.tolist() keeps allocations bounded.
+            data = chunk.tolist() if hasattr(chunk, "tolist") else list(chunk)
+            self.spi.xfer2(data)
+            offset += len(chunk)
 
     # --- Public API --------------------------------------------------------
     def display_frame(self, red: bytes, black: bytes, *, image: Optional[Image.Image] = None) -> None:
@@ -112,17 +140,18 @@ class HardwareEpaperDriver:
         self._update()
 
     def _write_channel(self, command: int, payload: bytes) -> None:
-        self._wait()
+        self._wait(stage=f"pre-command 0x{command:02X}")
         self._command(command)
-        for byte in payload:
-            self._data(byte)
+        GPIO.output(self.pins.dc, GPIO.HIGH)
+        self._transfer_bytes(payload)
 
     def _update(self) -> None:
         self._command(0x20)
-        self._wait()
+        self._wait(stage="display-refresh")
         self._command(0x10)
         self._data(0x01)
         time.sleep(0.1)
+        self._wait(stage="post-deep-sleep")
 
     def clear(self) -> None:
         """Clear the display to white."""
