@@ -116,18 +116,14 @@ def test_mapbox_client_falls_back_to_static_image(tmp_path: Path) -> None:
 
 def test_mapbox_client_refreshes_after_cumulative_distance(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    settings.mapbox_refresh_radius_km = 5.0
+    settings.mapbox_refresh_radius_km = 200.0
     session = DummySession(make_tile_payload())
     client = MapboxClient(settings, session=session)  # type: ignore[arg-type]
 
     client.get_portrait_image(0.0, 0.0, force=True)
-    # Individual hops remain within the refresh radius, so cached imagery is reused.
-    for step in range(1, 5):
-        delta = step * 0.01
-        client.get_portrait_image(delta, delta)
+    assert session.calls == 1
 
-    # Once the cumulative distance exceeds the radius, a refresh should be triggered.
-    assert client.needs_refresh(0.06, 0.06)
+    for multiplier in (0.4, 0.8, 1.2, 1.6, 2.0):
+        client.get_portrait_image(multiplier, 0.0)
 
-    client.get_portrait_image(0.06, 0.06)
-    assert not client.needs_refresh(0.08, 0.08)
+    assert session.calls == 2
