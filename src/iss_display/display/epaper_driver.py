@@ -67,7 +67,7 @@ class HardwareEpaperDriver:
         GPIO.setwarnings(False)
         GPIO.setup(self.pins.reset, GPIO.OUT)
         GPIO.setup(self.pins.dc, GPIO.OUT)
-        GPIO.setup(self.pins.busy, GPIO.IN)
+        GPIO.setup(self.pins.busy, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
         self._reset()
         self._command(0x12)  # soft reset
@@ -76,9 +76,9 @@ class HardwareEpaperDriver:
     # --- Low-level helpers -------------------------------------------------
     def _wait(self, timeout: float = 120.0) -> None:
         deadline = time.monotonic() + timeout
-        while GPIO.input(self.pins.busy) == GPIO.HIGH:
+        while GPIO.input(self.pins.busy) == GPIO.LOW:
             if time.monotonic() >= deadline:
-                raise TimeoutError("E-paper busy pin remained high for too long")
+                raise TimeoutError("E-paper busy pin remained low for too long")
             time.sleep(0.05)
 
     def _command(self, value: int) -> None:
