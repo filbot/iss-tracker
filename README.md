@@ -52,6 +52,8 @@ LED_PIN=12
 Directories used for cache/preview/state default to `var/cache`, `var/previews`, and `var/state`. Override via `ISS_CACHE_DIR`, `ISS_PREVIEW_DIR`, `ISS_STATE_DIR` if desired.
 
 ### Installing & Running
+If you are configuring everything directly on a Raspberry Pi Zero, see `docs/pi-zero-setup.md` for a complete step-by-step walkthrough tailored to that board.
+
 ```bash
 pip install -r requirements.txt
 python -m iss_display.app.main --preview-only refresh-once   # dry run without hardware
