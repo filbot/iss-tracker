@@ -64,6 +64,11 @@ class FrameEncoder:
         return white_mask
 
     def _pack_mask(self, mask: np.ndarray) -> bytes:
+        """Pack boolean mask into bytes, matching waveshare getbuffer() format.
+        
+        Standard format: left-to-right, top-to-bottom, MSB first within each byte.
+        Each byte contains 8 pixels, with the leftmost pixel in the MSB.
+        """
         buf = bytearray(self.byte_length)
         row_bytes = self._row_bytes
         for y in range(self.height):
@@ -72,6 +77,7 @@ class FrameEncoder:
             for x in range(self.width):
                 if not row[x]:
                     continue
-                index = base + (row_bytes - 1 - x // 8)
-                buf[index] |= 1 << (x % 8)
+                byte_index = base + (x // 8)
+                bit_position = 7 - (x % 8)  # MSB first
+                buf[byte_index] |= 1 << bit_position
         return bytes(buf)
