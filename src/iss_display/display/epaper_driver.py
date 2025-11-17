@@ -41,6 +41,7 @@ class DriverPins:
     reset: int = 17
     dc: int = 25
     busy: int = 24
+    cs: int = 8
 
 
 class BusyWaitTimeout(TimeoutError):
@@ -60,7 +61,7 @@ class HardwareEpaperDriver:
         width: int,
         height: int,
         has_red: bool = True,
-        max_speed_hz: int = 500_000,
+        max_speed_hz: int = 4_000_000,
         pins: DriverPins | None = None,
     ) -> None:
         if spidev is None or GPIO is None:
@@ -85,11 +86,15 @@ class HardwareEpaperDriver:
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        GPIO.setup(self.pins.reset, GPIO.OUT, initial=GPIO.HIGH)  # Start with reset deasserted
+        GPIO.setup(self.pins.reset, GPIO.OUT)
         GPIO.setup(self.pins.dc, GPIO.OUT)
+        GPIO.setup(self.pins.cs, GPIO.OUT)
         GPIO.setup(self.pins.busy, GPIO.IN)
         
-        # Give display a moment to come out of reset if it was held low
+        # Initialize CS high (inactive)
+        GPIO.output(self.pins.cs, GPIO.HIGH)
+        
+        # Give display a moment to stabilize
         time.sleep(0.1)
         
         # Log initial BUSY pin state for diagnostics
@@ -114,15 +119,19 @@ class HardwareEpaperDriver:
                     self.pins.busy, stage, elapsed
                 )
                 raise BusyWaitTimeout(stage, timeout)
-            time.sleep(0.05)
+            time.sleep(0.01)
 
     def _command(self, value: int) -> None:
         GPIO.output(self.pins.dc, GPIO.LOW)
+        GPIO.output(self.pins.cs, GPIO.LOW)
         self.spi.xfer([value & 0xFF])
+        GPIO.output(self.pins.cs, GPIO.HIGH)
 
     def _data(self, value: int) -> None:
         GPIO.output(self.pins.dc, GPIO.HIGH)
+        GPIO.output(self.pins.cs, GPIO.LOW)
         self.spi.xfer([value & 0xFF])
+        GPIO.output(self.pins.cs, GPIO.HIGH)
 
     def _reset_with_retry(self, attempts: int = 3) -> None:
         last_error: BusyWaitTimeout | None = None
@@ -146,16 +155,19 @@ class HardwareEpaperDriver:
     def _reset_once(self) -> None:
         """Hardware reset sequence for the e-paper display."""
         LOGGER.debug("Starting hardware reset sequence")
-        GPIO.output(self.pins.reset, GPIO.LOW)
-        time.sleep(0.2)  # Longer low pulse
         GPIO.output(self.pins.reset, GPIO.HIGH)
-        time.sleep(0.5)  # Give panel more time to initialize
+        time.sleep(0.2)
+        GPIO.output(self.pins.reset, GPIO.LOW)
+        time.sleep(0.002)
+        GPIO.output(self.pins.reset, GPIO.HIGH)
+        time.sleep(0.2)
         LOGGER.debug("Waiting for BUSY pin to indicate ready state")
         self._wait(stage="panel-reset")
 
     def _transfer_bytes(self, payload: bytes) -> None:
         if not payload:
             return
+        GPIO.output(self.pins.cs, GPIO.LOW)
         view = memoryview(payload)
         chunk_size = self._chunk_size
         offset = 0
@@ -165,6 +177,7 @@ class HardwareEpaperDriver:
             data = chunk.tolist() if hasattr(chunk, "tolist") else list(chunk)
             self.spi.xfer2(data)
             offset += len(chunk)
+        GPIO.output(self.pins.cs, GPIO.HIGH)
 
     # --- Public API --------------------------------------------------------
     def display_frame(self, red: bytes, black: bytes, *, image: Optional[Image.Image] = None) -> None:
@@ -207,7 +220,7 @@ class HardwareEpaperDriver:
             self.spi.close()
         finally:
             if GPIO:
-                GPIO.cleanup([self.pins.reset, self.pins.dc, self.pins.busy])
+                GPIO.cleanup([self.pins.reset, self.pins.dc, self.pins.cs, self.pins.busy])
 
     # Context manager helpers
     def __enter__(self) -> "HardwareEpaperDriver":
