@@ -10,7 +10,7 @@ from typing import Optional, Protocol
 from PIL import Image
 
 try:  # pragma: no cover - hardware import optional
-    import epd2in13 as _waveshare_module  # type: ignore
+    from iss_display.display.vendor import epd2in13 as _waveshare_module  # type: ignore
 except Exception:  # pragma: no cover - hardware import optional
     _waveshare_module = None
 
