@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -16,7 +16,13 @@ class FrameLayout:
         self.width = width
         self.height = height
         self.pin_color = pin_color
-        self.font = ImageFont.load_default()
+        try:
+            self.font = ImageFont.truetype("DejaVuSans.ttf", 12)
+        except OSError:
+            try:
+                self.font = ImageFont.truetype("Arial.ttf", 12)
+            except OSError:
+                self.font = ImageFont.load_default()
 
     def compose(self, base_image: Image.Image, fix: ISSFix) -> Image.Image:
         canvas = base_image.convert("RGB").resize((self.width, self.height), Image.LANCZOS)
@@ -32,46 +38,57 @@ class FrameLayout:
         draw.line((0, cy, self.width, cy), fill=self.pin_color, width=1)
         draw.ellipse((cx - 3, cy - 3, cx + 3, cy + 3), fill=self.pin_color, outline="white")
 
-    def _telemetry_lines(self, fix: ISSFix) -> List[str]:
+    def _telemetry_lines(self, fix: ISSFix) -> List[Tuple[str, str]]:
         lines = [
-            f"Lat {fix.latitude:.2f}°",
-            f"Lon {fix.longitude:.2f}°",
+            ("Lat", f"{fix.latitude:.2f}°"),
+            ("Lon", f"{fix.longitude:.2f}°"),
         ]
         if fix.altitude_km is not None:
-            lines.append(f"Alt {fix.altitude_km:.0f} km")
+            lines.append(("Alt", f"{fix.altitude_km:.0f} km"))
         if fix.velocity_kmh is not None:
-            lines.append(f"Vel {fix.velocity_kmh:.0f} km/h")
+            lines.append(("Vel", f"{fix.velocity_kmh:.0f} km/h"))
         return lines
 
-    def _draw_banner(self, draw: ImageDraw.ImageDraw, lines: List[str]) -> None:
+    def _draw_banner(self, draw: ImageDraw.ImageDraw, lines: List[Tuple[str, str]]) -> None:
         if not lines:
             return
 
-        padding = 6
+        margin = 5
+        padding = 5
         spacing = 2
-        text_width = 0
-        text_height = 0
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=self.font)
-            width = bbox[2] - bbox[0]
-            height = bbox[3] - bbox[1]
-            text_width = max(text_width, width)
-            text_height += height + spacing
-        text_height -= spacing
 
-        box_width = text_width + padding * 2
-        box_height = text_height + padding * 2
-        x0 = max(0, (self.width - box_width) // 2)
-        y0 = padding
-        x1 = x0 + box_width
-        y1 = y0 + box_height
+        # Calculate total height
+        total_text_height = 0
+        for key, value in lines:
+            bbox_key = draw.textbbox((0, 0), key, font=self.font)
+            bbox_val = draw.textbbox((0, 0), value, font=self.font)
+            h = max(bbox_key[3] - bbox_key[1], bbox_val[3] - bbox_val[1])
+            total_text_height += h + spacing
+        
+        if total_text_height > 0:
+            total_text_height -= spacing
 
-        draw.rectangle((x0, y0, x1, y1), fill=(255, 255, 255, 230))
-        text_y = y0 + padding
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=self.font)
-            line_width = bbox[2] - bbox[0]
-            line_height = bbox[3] - bbox[1]
-            text_x = x0 + max(0, (box_width - line_width) // 2)
-            draw.text((text_x, text_y), line, fill="black", font=self.font)
-            text_y += line_height + spacing
+        box_x0 = margin
+        box_y0 = margin
+        box_width = self.width - 2 * margin
+        box_height = total_text_height + 2 * padding
+        
+        box_x1 = box_x0 + box_width
+        box_y1 = box_y0 + box_height
+
+        draw.rectangle((box_x0, box_y0, box_x1, box_y1), fill=(255, 255, 255, 230))
+        
+        text_y = box_y0 + padding
+        for key, value in lines:
+            # Draw key left aligned
+            draw.text((box_x0 + padding, text_y), key, fill="black", font=self.font)
+            
+            # Draw value right aligned
+            bbox_val = draw.textbbox((0, 0), value, font=self.font)
+            val_width = bbox_val[2] - bbox_val[0]
+            val_x = box_x1 - padding - val_width
+            draw.text((val_x, text_y), value, fill="black", font=self.font)
+            
+            bbox_key = draw.textbbox((0, 0), key, font=self.font)
+            h = max(bbox_key[3] - bbox_key[1], bbox_val[3] - bbox_val[1])
+            text_y += h + spacing
