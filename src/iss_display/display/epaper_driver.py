@@ -11,7 +11,8 @@ from PIL import Image
 
 try:  # pragma: no cover - hardware import optional
     from iss_display.display.vendor import epd2in13 as _waveshare_module  # type: ignore
-except Exception:  # pragma: no cover - hardware import optional
+except Exception as e:  # pragma: no cover - hardware import optional
+    LOGGER.warning(f"Failed to import vendor driver: {e}")
     _waveshare_module = None
 
 LOGGER = logging.getLogger(__name__)
