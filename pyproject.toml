@@ -12,6 +12,9 @@ dependencies = [
     "spidev>=3.6"
 ]
 
+[project.scripts]
+iss-display = "iss_display.app.main:main"
+
 dynamic = ["readme"]
 
 [tool.setuptools.dynamic]
