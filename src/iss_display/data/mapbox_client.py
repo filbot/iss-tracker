@@ -32,6 +32,29 @@ class MapboxClient:
             image = image.resize(target_size, Image.LANCZOS)
         return image
 
+    def get_location_name(self, lat: float, lon: float) -> str:
+        """Reverse geocode the coordinates to get a location name."""
+        url = (
+            f"https://api.mapbox.com/geocoding/v5/mapbox.places/{lon},{lat}.json"
+            f"?access_token={self._settings.mapbox_token}&types=place,region,country,district,locality"
+            "&limit=1"
+        )
+        try:
+            response = self._session.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            features = data.get("features", [])
+            if features:
+                return features[0].get("text", "Unknown Location")
+            
+            # If no features found (e.g. ocean), try a broader search or return generic
+            # For oceans, Mapbox might not return anything with these types.
+            # We could try without types, but that might return specific addresses.
+            # Let's try a fallback for oceans if needed, but for now "Unknown Location" or "Open Water"
+            return "Open Water"
+        except Exception:
+            return "Unknown Location"
+
     def _build_static_image_url(self, lat: float, lon: float) -> str:
         pin_color = self._settings.pin_color.lstrip("#") or "ED1C24"
         width = self._settings.display_logical_width

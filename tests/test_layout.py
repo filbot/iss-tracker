@@ -18,5 +18,5 @@ def test_layout_compose():
     layout = FrameLayout(100, 200, pin_color="red")
     fix = ISSFix(latitude=10.0, longitude=20.0, altitude_km=400.0, velocity_kmh=27000.0, timestamp=1234567890)
     base_image = Image.new("RGB", (100, 200), "blue")
-    result = layout.compose(base_image, fix)
+    result = layout.compose(base_image, fix, location_name="Pacific Ocean")
     assert result.size == (100, 200)
