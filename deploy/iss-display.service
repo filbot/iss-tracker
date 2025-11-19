@@ -1,0 +1,14 @@
+[Unit]
+Description=Update ISS E-Paper Display
+Wants=iss-display.timer
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/iss-tracker
+# Assumes a virtual environment at .venv inside the project
+ExecStart=%h/iss-tracker/.venv/bin/python -m iss_display.app.main
+# Load environment variables (MAPBOX_TOKEN, etc.)
+EnvironmentFile=%h/iss-tracker/.env
+
+[Install]
+WantedBy=default.target

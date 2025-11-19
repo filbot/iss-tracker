@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ISS Display Update every 60 seconds
+Requires=iss-display.service
+
+[Timer]
+# Run 1 minute after boot
+OnBootSec=1min
+# Run 60 seconds after the last activation
+OnUnitActiveSec=60s
+
+[Install]
+WantedBy=timers.target
