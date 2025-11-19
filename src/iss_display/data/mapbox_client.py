@@ -63,7 +63,6 @@ class MapboxClient:
         return (
             "https://api.mapbox.com/styles/v1/"
             f"{self._settings.mapbox_username}/{self._settings.mapbox_style_id}/static/"
-            f"pin-s+{pin_color}({lon:.6f},{lat:.6f})/"
             f"{lon:.6f},{lat:.6f},{zoom},0/"
             f"{width}x{height}?access_token={self._settings.mapbox_token}&logo=false&attribution=false"
         )

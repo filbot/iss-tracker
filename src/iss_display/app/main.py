@@ -7,6 +7,7 @@ import logging
 from typing import Sequence
 
 from iss_display.config import Settings
+from iss_display.data.geography import get_common_area_name
 from iss_display.data.iss_client import ISSClient
 from iss_display.data.mapbox_client import MapboxClient
 from iss_display.display.epaper_driver import build_driver
@@ -45,7 +46,7 @@ def refresh_once(settings: Settings, *, preview_only: bool) -> None:
     try:
         fix = iss_client.get_fix()
         base_map = mapbox_client.get_portrait_image(fix.latitude, fix.longitude)
-        location_name = mapbox_client.get_location_name(fix.latitude, fix.longitude)
+        location_name = get_common_area_name(fix.latitude, fix.longitude)
         canvas = layout.compose(base_map, fix, location_name)
         red_buffer, black_buffer = encoder.encode(canvas)
         driver.display_frame(red_buffer, black_buffer, image=canvas)
