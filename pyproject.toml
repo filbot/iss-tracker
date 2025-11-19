@@ -12,6 +12,9 @@ dependencies = [
 
 dynamic = ["readme"]
 
+[tool.setuptools.dynamic]
+readme = { file = "README.md" }
+
 [build-system]
 requires = ["setuptools>=62.0"]
 build-backend = "setuptools.build_meta"
