@@ -101,7 +101,7 @@ class FrameLayout:
         padding = 5
         spacing = 2
 
-        lines = ["Somewhere near", location_name]
+        lines = ["Somewhere over", location_name]
         
         # Calculate total height
         total_text_height = 0
