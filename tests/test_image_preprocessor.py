@@ -28,4 +28,8 @@ def test_encoder_bit_lengths(tmp_path: Path) -> None:
     red2, black2 = encoder.encode(canvas_red)
     assert red2.count(0) > 0  # red pixels should clear bits in the plane
     assert red2.count(0) < len(red2)  # padding ensures not every byte is zero
-    assert black2.count(0xFF) < len(black2)
+    assert black2 == black
+
+    canvas_black = Image.new("RGB", (logical_width, height), "black")
+    _, black3 = encoder.encode(canvas_black)
+    assert black3.count(0xFF) < len(black3)

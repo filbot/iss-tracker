@@ -6,9 +6,11 @@ from typing import Tuple
 
 from PIL import Image
 
+_RED_DIFF_MIN = 30
+
 
 class FrameEncoder:
-    """Transforms PIL images into red/black buffers without external deps."""
+    """Transforms PIL images into tri-color bitplanes without vendor imports."""
 
     def __init__(
         self,
@@ -19,6 +21,11 @@ class FrameEncoder:
         logical_width: int,
         pad_left: int,
         pad_right: int,
+        rotate_degrees: int = 180,
+        black_threshold: int = 96,
+        red_green_max: int = 80,
+        red_blue_max: int = 80,
+        red_min: int = 150,
     ) -> None:
         self.width = width
         self.height = height
@@ -26,50 +33,63 @@ class FrameEncoder:
         self.logical_width = logical_width
         self.pad_left = pad_left
         self.pad_right = pad_right
+        self.rotate_degrees = rotate_degrees % 360
+        self.black_threshold = black_threshold
+        self.red_green_max = red_green_max
+        self.red_blue_max = red_blue_max
+        self.red_min = red_min
 
+        if self.rotate_degrees % 90 != 0:
+            raise ValueError("Display rotation must be expressed in 90° increments")
         if self.pad_left + self.logical_width + self.pad_right != self.width:
             raise ValueError("Logical width plus padding must equal physical width")
-        if self.width % 8 != 0:
-            raise ValueError("Display width must be byte-aligned (multiple of 8)")
 
-        self.byte_length = (self.width * self.height) // 8
-        self._row_bytes = self.width // 8
+        self._row_bytes = (self.width + 7) // 8
+        self.byte_length = self._row_bytes * self.height
 
     def encode(self, image: Image.Image) -> Tuple[bytes, bytes]:
         portrait = image.convert("RGB").resize((self.logical_width, self.height), Image.LANCZOS)
         canvas = Image.new("RGB", (self.width, self.height), "white")
         canvas.paste(portrait, (self.pad_left, 0))
-        pixels = canvas.load()
 
-        red_plane = bytearray([0xFF] * self.byte_length) if self.has_red else None
-        black_plane = bytearray(self.byte_length)
+        if self.rotate_degrees:
+            canvas = canvas.rotate(self.rotate_degrees, expand=True)
+            if canvas.size != (self.width, self.height):
+                canvas = canvas.resize((self.width, self.height), Image.LANCZOS)
+
+        pixels = canvas.load()
+        red_plane = bytearray([0xFF] * self.byte_length)
+        black_plane = bytearray([0xFF] * self.byte_length)
 
         for y in range(self.height):
             row_offset = y * self._row_bytes
             for x in range(self.width):
                 r, g, b = pixels[x, y]
                 byte_index = row_offset + (x // 8)
-                bit = 1 << (7 - (x % 8))
+                bit = 0x80 >> (x % 8)
 
-                if self.has_red and _is_redish(r, g, b):
+                is_red_pixel = _is_red(r, g, b, self.red_min, self.red_green_max, self.red_blue_max)
+                if is_red_pixel and self.has_red:
                     red_plane[byte_index] &= ~bit
                     continue
-                if _is_whitish(r, g, b):
-                    black_plane[byte_index] |= bit
 
-        red_bytes = bytes(red_plane) if self.has_red else bytes([0xFF] * self.byte_length)
+                if is_red_pixel and not self.has_red:
+                    is_black_pixel = True
+                else:
+                    is_black_pixel = _is_black(r, g, b, self.black_threshold)
+
+                if is_black_pixel:
+                    black_plane[byte_index] &= ~bit
+
+        red_bytes = bytes(red_plane)
+        if not self.has_red:
+            red_bytes = bytes([0xFF] * self.byte_length)
         return red_bytes, bytes(black_plane)
 
 
-def _is_redish(r: int, g: int, b: int) -> bool:
-    target = (0xED, 0x1C, 0x24)
-    dr = r - target[0]
-    dg = g - target[1]
-    db = b - target[2]
-    distance_sq = dr * dr + dg * dg + db * db
-    return distance_sq < 65 * 65
+def _is_black(r: int, g: int, b: int, threshold: int) -> bool:
+    return max(r, g, b) <= threshold
 
 
-def _is_whitish(r: int, g: int, b: int) -> bool:
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    return luminance >= 190
+def _is_red(r: int, g: int, b: int, red_min: int, green_max: int, blue_max: int) -> bool:
+    return r >= red_min and g <= green_max and b <= blue_max and (r - max(g, b)) >= _RED_DIFF_MIN

@@ -23,4 +23,9 @@ def test_encoder_outputs_expected_lengths() -> None:
     red_canvas = Image.new("RGB", (122, 250), "red")
     red2, black2 = encoder.encode(red_canvas)
     assert red2 != red
-    assert black2 != black
+    assert black2 == black
+
+    black_canvas = Image.new("RGB", (122, 250), "black")
+    red3, black3 = encoder.encode(black_canvas)
+    assert red3 == red
+    assert black3 != black

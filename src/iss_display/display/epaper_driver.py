@@ -37,8 +37,7 @@ class WaveshareDriver:
         self.width = width
         self.height = height
         self.has_red = has_red
-        self._warned_red_drop = False
-        self._expected_length = (width * height) // 8
+        self._expected_length = ((width + 7) // 8) * height
         self._epd = _waveshare_module.EPD()
 
         self._hardware_length = ((self._epd.width + 7) // 8) * self._epd.height
@@ -50,20 +49,24 @@ class WaveshareDriver:
             )
 
         LOGGER.info("Initializing epd2in13 panel")
-        if self._epd.init(self._epd.lut_full_update) != 0:
+        if self._epd.init() != 0:
             raise RuntimeError("Failed to initialize epd2in13 panel")
         self._epd.Clear()
+        if not self.has_red:
+            LOGGER.warning("Red plane disabled; red pixels will render as black")
 
     def display_frame(self, red: bytes, black: bytes, *, image: Optional[Image.Image] = None) -> None:
-        if self.has_red and not self._warned_red_drop:
-            LOGGER.warning("epd2in13 is monochrome; red bitplane will be rendered as black")
-            self._warned_red_drop = True
-
-        if self.has_red:
-            self._validate_length(red, "red", expected=self._hardware_length)
+        self._validate_length(red, "red", expected=self._hardware_length)
         self._validate_length(black, "black", expected=self._hardware_length)
-        payload = bytearray(black)
-        self._epd.display(payload)
+
+        black_payload = bytearray(black)
+        red_payload = bytearray(red)
+
+        if not self.has_red:
+            # Ensure red overlay stays white when hardware red channel is unused.
+            red_payload[:] = b"\xFF" * len(red_payload)
+
+        self._epd.display(black_payload, red_payload)
 
     def _validate_length(self, payload: bytes, label: str, *, expected: int) -> None:
         if len(payload) != expected:

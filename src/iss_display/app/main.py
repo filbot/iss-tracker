@@ -32,6 +32,7 @@ def refresh_once(settings: Settings, *, preview_only: bool) -> None:
         logical_width=settings.display_logical_width,
         pad_left=settings.display_pad_left,
         pad_right=settings.display_pad_right,
+        rotate_degrees=settings.display_rotation_degrees,
     )
     driver = build_driver(
         preview_only=preview_only,

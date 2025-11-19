@@ -5,8 +5,8 @@ Self-contained Python script that fetches the latest ISS telemetry, downloads a 
 ### Flow
 1. Query the ISS position from `wheretheiss.at`.
 2. Request a portrait Mapbox Static Image centered on that coordinate.
-3. Draw a crosshair + telemetry banner and convert the frame into red/black bitplanes.
-4. Send the frame to either the real panel (via the vendor `epd2in13` driver) or a preview PNG.
+3. Draw a crosshair + telemetry banner and convert the frame into tri-color bitplanes.
+4. Send the frame to either the real panel (via the vendored tri-color driver) or a preview PNG.
 
 ### Hardware Prerequisites
 - Raspberry Pi Zero v1.3 or any newer Pi running Raspberry Pi OS.
@@ -17,7 +17,7 @@ Self-contained Python script that fetches the latest ISS telemetry, downloads a 
 - Python 3.10+
 - System packages: `libopenjp2-7`, `libtiff6`, etc. (installed automatically on Raspberry Pi OS).
 - Python dependencies listed in `requirements.txt` (install via `pip install -r requirements.txt`).
-- For hardware runs, the official `epd2in13.py` + `epdconfig.py` modules now live inside this repo. Install `spidev`, `gpiozero`, and the rest of the Waveshare prerequisites on your Pi so the driver can talk to the panel. Use `--preview-only` if you only need PNG output.
+- For hardware runs, the official tri-color `epd2in13.py` + `epdconfig.py` modules live inside this repo. Install `spidev`, `gpiozero`, and the rest of the Waveshare prerequisites on your Pi so the driver can talk to the panel. Use `--preview-only` if you only need PNG output.
 
 ### Environment Variables
 Create a `.env` file in the repo root or export the variables manually:
@@ -34,8 +34,9 @@ EPD_HEIGHT=250
 EPD_LOGICAL_WIDTH=122
 EPD_PAD_LEFT=3
 EPD_PAD_RIGHT=3
-EPD_HAS_RED=false
+EPD_HAS_RED=true
 EPD_PREVIEW_ONLY=false
+EPD_ROTATION_DEGREES=180
 ISS_PREVIEW_DIR=var/previews
 ```
 
