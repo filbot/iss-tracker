@@ -22,7 +22,7 @@ class FrameEncoder:
         pad_left: int,
         pad_right: int,
         rotate_degrees: int = 180,
-        black_threshold: int = 96,
+        black_threshold: int = 128,
         red_green_max: int = 80,
         red_blue_max: int = 80,
         red_min: int = 150,
