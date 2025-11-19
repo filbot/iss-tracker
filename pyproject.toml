@@ -12,10 +12,10 @@ dependencies = [
     "spidev>=3.6"
 ]
 
+dynamic = ["readme"]
+
 [project.scripts]
 iss-display = "iss_display.app.main:main"
-
-dynamic = ["readme"]
 
 [tool.setuptools.dynamic]
 readme = { file = "README.md" }
