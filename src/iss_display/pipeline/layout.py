@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
@@ -16,13 +17,14 @@ class FrameLayout:
         self.width = width
         self.height = height
         self.pin_color = pin_color
+        
         try:
-            self.font = ImageFont.truetype("DejaVuSans.ttf", 12)
+            # Load bundled font
+            font_path = Path(__file__).parent.parent / "fonts" / "Roboto-Regular.ttf"
+            self.font = ImageFont.truetype(str(font_path), 12)
         except OSError:
-            try:
-                self.font = ImageFont.truetype("Arial.ttf", 12)
-            except OSError:
-                self.font = ImageFont.load_default()
+            # Fallback to default if bundled font is missing
+            self.font = ImageFont.load_default()
 
     def compose(self, base_image: Image.Image, fix: ISSFix) -> Image.Image:
         canvas = base_image.convert("RGB").resize((self.width, self.height), Image.LANCZOS)
