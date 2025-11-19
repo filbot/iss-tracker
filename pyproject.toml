@@ -9,8 +9,7 @@ dependencies = [
     "requests>=2.32.0",
     "python-dotenv>=1.0.0",
     "gpiozero>=2.0",
-    "spidev>=3.6",
-    "rpi-lgpio"
+    "spidev>=3.6"
 ]
 
 dynamic = ["readme"]
