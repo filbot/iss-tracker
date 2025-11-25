@@ -33,6 +33,10 @@ class Settings:
     display_width: int
     display_height: int
     display_has_red: bool
+    ui_background_color: str
+    ui_earth_color: str
+    ui_iss_color: str
+    ui_grid_density: int
     display_logical_width: int
     display_pad_left: int
     display_pad_right: int
@@ -46,9 +50,10 @@ class Settings:
         preview_dir = Path(os.getenv("ISS_PREVIEW_DIR", "var/previews")).resolve()
         preview_dir.mkdir(parents=True, exist_ok=True)
 
-        token = os.getenv("MAPBOX_TOKEN")
-        if not token:
-            raise RuntimeError("MAPBOX_TOKEN is required")
+        # token = os.getenv("MAPBOX_TOKEN")
+        # if not token:
+        #     raise RuntimeError("MAPBOX_TOKEN is required")
+        token = "dummy_token"
 
         return cls(
             mapbox_token=token,
@@ -57,13 +62,20 @@ class Settings:
             mapbox_zoom=int(os.getenv("MAPBOX_ZOOM", "2")),
             pin_color=os.getenv("MAP_PIN_COLOR", "#ED1C24"),
             iss_api_url=os.getenv("ISS_API_URL", "https://api.wheretheiss.at/v1/satellites/25544"),
-            display_width=int(os.getenv("EPD_WIDTH", "128")),
-            display_height=int(os.getenv("EPD_HEIGHT", "250")),
-            display_has_red=_as_bool(os.getenv("EPD_HAS_RED", "true"), default=True),
+            display_width=int(os.getenv("DISPLAY_WIDTH", "320")),
+            display_height=int(os.getenv("DISPLAY_HEIGHT", "480")),
+            display_has_red=_as_bool(os.getenv("DISPLAY_HAS_RED", "true"), default=True),
+            # New UI Settings
+            ui_background_color=os.getenv("UI_BACKGROUND_COLOR", "#000033"), # Dark Blue
+            ui_earth_color=os.getenv("UI_EARTH_COLOR", "#FFFFFF"),
+            ui_iss_color=os.getenv("UI_ISS_COLOR", "#FF0000"),
+            ui_grid_density=int(os.getenv("UI_GRID_DENSITY", "12")),
+            
+            # Legacy/Unused but kept for compatibility if needed temporarily
             display_logical_width=int(os.getenv("EPD_LOGICAL_WIDTH", "122")),
             display_pad_left=int(os.getenv("EPD_PAD_LEFT", "3")),
             display_pad_right=int(os.getenv("EPD_PAD_RIGHT", "3")),
-            display_rotation_degrees=int(os.getenv("EPD_ROTATION_DEGREES", "180")),
+            display_rotation_degrees=int(os.getenv("DISPLAY_ROTATION", "0")),
             preview_dir=preview_dir,
             preview_only=_as_bool(os.getenv("EPD_PREVIEW_ONLY", "false"), default=False),
             log_level=os.getenv("ISS_LOG_LEVEL", "INFO"),

@@ -7,12 +7,12 @@ import logging
 from typing import Sequence
 
 from iss_display.config import Settings
-from iss_display.data.geography import get_common_area_name
-from iss_display.data.iss_client import ISSClient
-from iss_display.data.mapbox_client import MapboxClient
-from iss_display.display.epaper_driver import build_driver
-from iss_display.pipeline.image_preprocessor import FrameEncoder
-from iss_display.pipeline.layout import FrameLayout
+# from iss_display.data.geography import get_common_area_name
+# from iss_display.data.iss_client import ISSClient # Imported inside function
+# from iss_display.data.mapbox_client import MapboxClient
+# from iss_display.display.epaper_driver import build_driver
+# from iss_display.pipeline.image_preprocessor import FrameEncoder
+# from iss_display.pipeline.layout import FrameLayout
 
 
 def configure_logging(level: str) -> None:
@@ -23,35 +23,25 @@ def configure_logging(level: str) -> None:
 
 
 def refresh_once(settings: Settings, *, preview_only: bool) -> None:
+    # New LCD Driver
+    from iss_display.display.lcd_driver import LcdDisplay
+    from iss_display.data.iss_client import ISSClient
+    
     iss_client = ISSClient(settings)
-    mapbox_client = MapboxClient(settings)
-    layout = FrameLayout(settings.display_logical_width, settings.display_height, pin_color=settings.pin_color)
-    encoder = FrameEncoder(
-        width=settings.display_width,
-        height=settings.display_height,
-        has_red=settings.display_has_red,
-        logical_width=settings.display_logical_width,
-        pad_left=settings.display_pad_left,
-        pad_right=settings.display_pad_right,
-        rotate_degrees=settings.display_rotation_degrees,
-    )
-    driver = build_driver(
-        preview_only=preview_only,
-        preview_dir=settings.preview_dir,
-        width=settings.display_width,
-        height=settings.display_height,
-        has_red=settings.display_has_red,
-    )
-
+    driver = LcdDisplay(settings)
+    
+    # We no longer need mapbox or complex layout for the wireframe UI
+    # Just get the fix and update the display
+    
     try:
         fix = iss_client.get_fix()
-        base_map = mapbox_client.get_portrait_image(fix.latitude, fix.longitude)
-        location_name = get_common_area_name(fix.latitude, fix.longitude)
-        canvas = layout.compose(base_map, fix, location_name)
-        red_buffer, black_buffer = encoder.encode(canvas)
-        driver.display_frame(red_buffer, black_buffer, image=canvas)
+        driver.update(fix.latitude, fix.longitude)
+    except Exception:
+        logging.exception("Failed to update display")
+        raise
     finally:
-        driver.close()
+        # driver.close() # LcdDisplay doesn't have close yet, but good practice
+        pass
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
