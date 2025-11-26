@@ -280,7 +280,11 @@ class LcdDisplay:
         
         # Send to Hardware
         if self.driver:
+            logger.info("Sending image to hardware display...")
             self.driver.display(self.image)
+            logger.info("Image sent to hardware display")
+        else:
+            logger.warning("No hardware driver available, skipping display update")
         
         # Save preview
         if self.settings.preview_dir:
