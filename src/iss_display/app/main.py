@@ -36,6 +36,14 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Show initial display immediately with default position
+    logger.info("Displaying initial frame...")
+    try:
+        driver.update(0.0, 0.0)
+        logger.info("Initial frame displayed")
+    except Exception as e:
+        logger.error(f"Failed to display initial frame: {e}")
 
     try:
         while running:
