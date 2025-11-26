@@ -44,6 +44,12 @@ class Settings:
     preview_dir: Path
     preview_only: bool
     log_level: str
+    gpio_dc: int
+    gpio_rst: int
+    gpio_bl: int
+    spi_bus: int
+    spi_device: int
+    spi_speed_hz: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -79,5 +85,13 @@ class Settings:
             preview_dir=preview_dir,
             preview_only=_as_bool(os.getenv("EPD_PREVIEW_ONLY", "false"), default=False),
             log_level=os.getenv("ISS_LOG_LEVEL", "INFO"),
+            
+            # Hardware Pins (BCM numbering)
+            gpio_dc=int(os.getenv("GPIO_DC", "25")),
+            gpio_rst=int(os.getenv("GPIO_RST", "27")),
+            gpio_bl=int(os.getenv("GPIO_BL", "18")),
+            spi_bus=int(os.getenv("SPI_BUS", "0")),
+            spi_device=int(os.getenv("SPI_DEVICE", "0")),
+            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "40000000")),
         )
 

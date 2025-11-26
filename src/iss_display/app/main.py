@@ -40,8 +40,7 @@ def refresh_once(settings: Settings, *, preview_only: bool) -> None:
         logging.exception("Failed to update display")
         raise
     finally:
-        # driver.close() # LcdDisplay doesn't have close yet, but good practice
-        pass
+        driver.close()
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
