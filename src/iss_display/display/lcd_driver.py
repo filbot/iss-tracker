@@ -91,10 +91,10 @@ class ST7796S:
         self._reset()
         
         self.command(SWRESET)
-        time.sleep(0.12)
+        time.sleep(0.15)
         
         self.command(SLPOUT)
-        time.sleep(0.12)
+        time.sleep(0.15)
         
         # Interface Pixel Format
         self.command(COLMOD)
@@ -104,16 +104,40 @@ class ST7796S:
         self.command(MADCTL)
         self.data(0x48) # MY=0, MX=1, MV=0, ML=0, BGR=1, MH=0
         
-        # Display Inversion On
+        # Display Inversion On (some displays need INVOFF instead)
         self.command(INVON)
         
         # Power Control and other settings can be default for now
         
         self.command(NORON)
+        time.sleep(0.01)
+        
         self.command(DISPON)
+        time.sleep(0.01)
         
         # Turn on backlight
         GPIO.output(self.bl, GPIO.HIGH)
+        
+        # Fill screen with red to verify display is working
+        self._test_fill(0xF800)  # Red in RGB565
+        time.sleep(0.5)
+    
+    def _test_fill(self, color: int):
+        """Fill the entire screen with a solid color (RGB565)."""
+        self.set_window(0, 0, self.width - 1, self.height - 1)
+        
+        high = (color >> 8) & 0xFF
+        low = color & 0xFF
+        
+        # Create pixel data for entire screen
+        total_pixels = self.width * self.height
+        pixel_data = [high, low] * total_pixels
+        
+        GPIO.output(self.dc, GPIO.HIGH)
+        
+        chunk_size = 4096
+        for i in range(0, len(pixel_data), chunk_size):
+            self.spi.writebytes(pixel_data[i:i+chunk_size])
 
     def set_window(self, x0, y0, x1, y1):
         self.command(CASET)
