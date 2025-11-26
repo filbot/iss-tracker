@@ -196,8 +196,23 @@ class LcdDisplay:
             else:
                 logger.info("Running in preview-only mode")
         
+        # Configure PlanetMapper kernel path
+        # Use a local directory 'var/spice_kernels' to ensure we have write access and it's self-contained
+        self.kernel_dir = self.settings.preview_dir.parent / "spice_kernels"
+        self.kernel_dir.mkdir(parents=True, exist_ok=True)
+        planetmapper.set_kernel_path(str(self.kernel_dir))
+        
         # Initialize PlanetMapper Body
-        self.body = planetmapper.Body('earth', datetime.datetime.now(), observer='moon')
+        try:
+            self.body = planetmapper.Body('earth', datetime.datetime.now(), observer='moon')
+        except Exception as e:
+            logger.warning(f"Failed to initialize PlanetMapper Body: {e}")
+            logger.info("This is likely due to missing SPICE kernels.")
+            logger.info(f"Please check {self.kernel_dir} or run a setup script to download them.")
+            # Attempt to re-raise or handle gracefully?
+            # If we can't load the body, we can't render the wireframe.
+            # We could fallback to a simple circle?
+            raise e
 
     def update(self, lat: float, lon: float):
         """
