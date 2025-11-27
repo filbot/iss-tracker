@@ -154,32 +154,21 @@ class ST7796S:
         if image.width != self.width or image.height != self.height:
             image = image.resize((self.width, self.height))
             
-        # Convert to RGB565
-        # ST7796S expects 16-bit color (5 bits red, 6 bits green, 5 bits blue)
-        # We can do this with numpy for speed
+        # Convert to RGB565 for ST7796S (BGR order)
+        img_np = np.array(image)  # (H, W, 3) RGB
         
-        img_np = np.array(image) # (H, W, 3) RGB
-        
-        # Extract channels
-        r = img_np[..., 0]
+        # Extract channels - swap R and B for BGR display
+        r = img_np[..., 2]  # Use blue channel as red
         g = img_np[..., 1]
-        b = img_np[..., 2]
+        b = img_np[..., 0]  # Use red channel as blue
         
         # Convert to 565
-        # R: 5 bits (mask 0xF8) -> shift right 3 -> shift left 11
-        # G: 6 bits (mask 0xFC) -> shift right 2 -> shift left 5
-        # B: 5 bits (mask 0xF8) -> shift right 3
-        
         rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
         
         # Flatten and convert to bytes (Big Endian)
-        # High byte first
         high_byte = (rgb565 >> 8).astype(np.uint8)
         low_byte = (rgb565 & 0xFF).astype(np.uint8)
         
-        # Interleave
-        # We need a flat list of [H, L, H, L, ...]
-        # Stack them
         pixel_data = np.dstack((high_byte, low_byte)).flatten().tolist()
         
         self.set_window(0, 0, self.width - 1, self.height - 1)
@@ -217,7 +206,6 @@ class LcdDisplay:
                 logger.info("Running in preview-only mode")
         
         # Configure PlanetMapper kernel path
-        # Use a local directory 'var/spice_kernels' to ensure we have write access and it's self-contained
         self.kernel_dir = self.settings.preview_dir.parent / "spice_kernels"
         self.kernel_dir.mkdir(parents=True, exist_ok=True)
         planetmapper.set_kernel_path(str(self.kernel_dir))
@@ -231,39 +219,80 @@ class LcdDisplay:
             logger.info(f"Please check {self.kernel_dir} or run a setup script to download them.")
             raise e
         
-        # Rotation state for animation
-        self.rotation_offset = 0.0
-
-    def update(self, lat: float, lon: float):
-        """
-        Updates the display with the current ISS position and rotating Earth.
-        """
-        # Update rotation offset for smooth animation (degrees per frame)
-        self.rotation_offset += 2.0  # Rotate 2 degrees per update
-        if self.rotation_offset >= 360:
-            self.rotation_offset -= 360
+        # Pre-rendered frame cache
+        self.frame_cache: List[Image.Image] = []
+        self.num_frames = 72  # 72 frames = 5 degrees per frame for full rotation
+        self.current_frame = 0
+        self.frames_generated = False
         
-        # Apply rotation to the view longitude
-        view_lon = (lon + self.rotation_offset) % 360
+        # Cache directory
+        self.cache_dir = self.settings.preview_dir.parent / "frame_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Try to load cached frames or generate them
+        self._load_or_generate_frames()
+
+    def _load_or_generate_frames(self):
+        """Load pre-rendered frames from cache or generate them."""
+        cache_file = self.cache_dir / "frames.npz"
+        
+        if cache_file.exists():
+            logger.info("Loading cached Earth frames...")
+            try:
+                data = np.load(cache_file)
+                for i in range(self.num_frames):
+                    img_array = data[f'frame_{i}']
+                    self.frame_cache.append(Image.fromarray(img_array))
+                self.frames_generated = True
+                logger.info(f"Loaded {len(self.frame_cache)} cached frames")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}, regenerating...")
+        
+        self._generate_frames()
+    
+    def _generate_frames(self):
+        """Pre-render all Earth rotation frames."""
+        logger.info(f"Generating {self.num_frames} Earth frames (this may take a minute)...")
+        
+        self.frame_cache = []
+        degrees_per_frame = 360 / self.num_frames
+        
+        for i in range(self.num_frames):
+            rotation = i * degrees_per_frame
+            logger.info(f"  Generating frame {i+1}/{self.num_frames} ({rotation:.0f}°)...")
+            
+            frame = self._render_earth_frame(rotation)
+            self.frame_cache.append(frame)
+        
+        # Save to cache
+        logger.info("Saving frames to cache...")
+        try:
+            frame_dict = {f'frame_{i}': np.array(frame) for i, frame in enumerate(self.frame_cache)}
+            np.savez_compressed(self.cache_dir / "frames.npz", **frame_dict)
+            logger.info("Frames cached successfully")
+        except Exception as e:
+            logger.warning(f"Failed to save cache: {e}")
+        
+        self.frames_generated = True
+        logger.info("Frame generation complete!")
+
+    def _render_earth_frame(self, rotation_degrees: float) -> Image.Image:
+        """Render a single Earth frame at the given rotation."""
+        dpi = 100
+        fig = plt.figure(figsize=(self.width/dpi, self.height/dpi), dpi=dpi)
+        fig.patch.set_facecolor(self.settings.ui_background_color)
+        
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_facecolor(self.settings.ui_background_color)
+        ax.axis('off')
+        
+        # Calculate view based on rotation
+        view_lon = rotation_degrees
         if view_lon > 180:
             view_lon -= 360
         
-        # Create Matplotlib Figure
-        dpi = 100
-        fig = plt.figure(figsize=(self.width/dpi, self.height/dpi), dpi=dpi)
-        
-        # Set background color
-        fig.patch.set_facecolor(self.settings.ui_background_color)
-        
-        ax = fig.add_axes([0, 0, 1, 1])  # Full screen axes
-        ax.set_facecolor(self.settings.ui_background_color)
-        ax.axis('off')  # Hide axes
-        
-        # Update body time for accurate positioning
-        self.body = planetmapper.Body('earth', datetime.datetime.now(), observer='moon')
-        
         try:
-            # Use rotated view longitude for the Earth orientation
             view_ra, view_dec = self.body.lonlat2radec(view_lon, 0)
         except Exception:
             view_ra, view_dec = self.body.target_ra, self.body.target_dec
@@ -296,43 +325,107 @@ class LcdDisplay:
                 ax.plot(ang_x, ang_y, color=self.settings.ui_earth_color, linewidth=1)
             except Exception:
                 continue
-
-        # Plot ISS Marker at its actual position relative to the rotating view
-        try:
-            iss_ra, iss_dec = self.body.lonlat2radec(lon, lat)
-            iss_x, iss_y = self.body.radec2angular(iss_ra, iss_dec, origin_ra=view_ra, origin_dec=view_dec)
-            # Only plot if ISS is on visible side of Earth
-            ax.plot(iss_x, iss_y, 'o', color=self.settings.ui_iss_color, markersize=12, zorder=10)
-            # Add a glow effect
-            ax.plot(iss_x, iss_y, 'o', color=self.settings.ui_iss_color, markersize=18, alpha=0.3, zorder=9)
-        except Exception:
-            pass
         
-        # Save to buffer
+        # Store view info for ISS overlay
+        ax._view_ra = view_ra
+        ax._view_dec = view_dec
+        ax._rotation = rotation_degrees
+        
         canvas = agg.FigureCanvasAgg(fig)
         canvas.draw()
         
         rgba_buffer = canvas.buffer_rgba()
         size = canvas.get_width_height()
         
-        self.image = Image.frombuffer("RGBA", size, rgba_buffer)
-        self.image = self.image.convert("RGB")
+        image = Image.frombuffer("RGBA", size, rgba_buffer)
+        image = image.convert("RGB")
         
         plt.close(fig)
+        return image
+
+    def update(self, lat: float, lon: float):
+        """
+        Updates the display with the current ISS position on rotating Earth.
+        Uses pre-rendered frames for smooth animation.
+        """
+        if not self.frames_generated:
+            logger.warning("Frames not yet generated")
+            return
+        
+        # Get current frame
+        base_frame = self.frame_cache[self.current_frame].copy()
+        
+        # Calculate ISS position on this frame
+        rotation = self.current_frame * (360 / self.num_frames)
+        
+        # Add ISS marker overlay
+        self._add_iss_marker(base_frame, lat, lon, rotation)
+        
+        self.image = base_frame
+        
+        # Advance to next frame
+        self.current_frame = (self.current_frame + 1) % self.num_frames
         
         # Send to Hardware
         if self.driver:
-            logger.info("Sending image to hardware display...")
             self.driver.display(self.image)
-            logger.info("Image sent to hardware display")
-        else:
-            logger.warning("No hardware driver available, skipping display update")
         
-        # Save preview
-        if self.settings.preview_dir:
+        # Save preview (only occasionally to reduce disk I/O)
+        if self.settings.preview_dir and self.current_frame % 10 == 0:
             preview_path = self.settings.preview_dir / "lcd_preview.png"
             self.image.save(preview_path)
-            logger.info(f"Saved preview to {preview_path}")
+
+    def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, rotation: float):
+        """Draw ISS marker on the frame at the correct position."""
+        from PIL import ImageDraw
+        
+        # Calculate where ISS appears on this rotation
+        view_lon = rotation
+        if view_lon > 180:
+            view_lon -= 360
+        
+        try:
+            view_ra, view_dec = self.body.lonlat2radec(view_lon, 0)
+            iss_ra, iss_dec = self.body.lonlat2radec(lon, lat)
+            
+            # Get angular position
+            iss_x, iss_y = self.body.radec2angular(iss_ra, iss_dec, origin_ra=view_ra, origin_dec=view_dec)
+            
+            # Convert angular position to pixel coordinates
+            # The angular coordinates are typically in degrees, centered at 0,0
+            # We need to map them to image pixels
+            cx, cy = self.width // 2, self.height // 2
+            
+            # Scale factor - approximate based on typical angular size of Earth
+            # Earth appears about 2 degrees across from Moon distance
+            scale = min(self.width, self.height) / 4  # Adjust this based on actual view
+            
+            px = int(cx + iss_x * scale)
+            py = int(cy - iss_y * scale)  # Flip Y for image coordinates
+            
+            # Check if ISS is on visible side (roughly)
+            # If angular distance from center is too large, ISS is on far side
+            angular_dist = np.sqrt(iss_x**2 + iss_y**2)
+            if angular_dist > 1.2:  # Earth radius in angular units
+                return  # ISS is on far side, don't draw
+            
+            # Check bounds
+            if 0 <= px < self.width and 0 <= py < self.height:
+                draw = ImageDraw.Draw(image)
+                
+                # Draw glow
+                r_glow = 12
+                for i in range(3):
+                    alpha = 80 - i * 25
+                    r = r_glow - i * 3
+                    draw.ellipse([px-r, py-r, px+r, py+r], fill=(255, 50, 50))
+                
+                # Draw solid marker
+                r_marker = 6
+                draw.ellipse([px-r_marker, py-r_marker, px+r_marker, py+r_marker], fill=(255, 0, 0))
+                
+        except Exception as e:
+            logger.debug(f"Could not plot ISS marker: {e}")
 
     def close(self):
         if self.driver:

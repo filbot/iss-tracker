@@ -29,8 +29,9 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
     
     running = True
     last_api_fetch = 0
-    api_fetch_interval = 10  # Fetch ISS position every 10 seconds
+    api_fetch_interval = 30  # Fetch ISS position every 30 seconds
     cached_fix = None
+    frame_count = 0
     
     def signal_handler(sig, frame):
         nonlocal running
@@ -39,15 +40,6 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Show initial display immediately with default position
-    logger.info("Displaying initial frame...")
-    frame_count = 0
-    try:
-        driver.update(0.0, 0.0)
-        logger.info("Initial frame displayed")
-    except Exception as e:
-        logger.error(f"Failed to display initial frame: {e}")
 
     try:
         while running:
@@ -55,28 +47,23 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
             frame_count += 1
             
             try:
-                # 1. Fetch Data (only every api_fetch_interval seconds)
+                # 1. Fetch ISS position (only every api_fetch_interval seconds)
                 if time.time() - last_api_fetch > api_fetch_interval or cached_fix is None:
                     cached_fix = iss_client.get_fix()
                     last_api_fetch = time.time()
-                    logger.info(f"ISS Position updated: Lat {cached_fix.latitude:.2f}, Lon {cached_fix.longitude:.2f}")
+                    logger.info(f"ISS Position: Lat {cached_fix.latitude:.2f}, Lon {cached_fix.longitude:.2f}")
                 
                 fix = cached_fix
                 
-                # 2. Update Display
-                logger.info(f"Rendering frame {frame_count}...")
+                # 2. Update Display (fast - uses pre-rendered frames)
                 driver.update(fix.latitude, fix.longitude)
                 
             except Exception as e:
                 logger.error(f"Error in update loop: {e}")
-                # Don't crash the loop on transient errors, just wait and retry
             
-            # 3. Wait for next frame
-            # For smooth rotation animation, update frequently
-            # ISS position is cached and only fetched every few seconds
-            
+            # 3. Wait for next frame - target 10 FPS for smooth rotation
             elapsed = time.time() - start_time
-            sleep_time = max(0.1, 0.5 - elapsed)  # Target ~2 FPS for smooth rotation
+            sleep_time = max(0.01, 0.1 - elapsed)
             
             if running:
                 time.sleep(sleep_time)
