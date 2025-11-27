@@ -101,8 +101,10 @@ class ST7796S:
         self.data(0x55) # 16-bit/pixel
         
         # Memory Access Control
+        # Bits: MY MX MV ML BGR MH 0 0
+        # 0x40 = 0100 0000 = MX=1, BGR=0 (RGB order)
         self.command(MADCTL)
-        self.data(0x48)  # MY=0, MX=1, MV=0, ML=0, BGR=1, MH=0 (BGR order)
+        self.data(0x40)
         
         # Display Inversion On (some displays need INVOFF instead)
         self.command(INVON)
@@ -154,15 +156,20 @@ class ST7796S:
         if image.width != self.width or image.height != self.height:
             image = image.resize((self.width, self.height))
             
-        # Convert to RGB565 for ST7796S (BGR order)
+        # Convert to RGB565 for ST7796S
+        # The display has MADCTL BGR=1, which means it expects BGR order
+        # But our test showed: sending 0xF800 (RGB red) shows as blue
+        # This means BGR=1 is swapping, so we need to send RGB as-is
+        # Actually no - let's NOT swap here since MADCTL already handles it
+        
         img_np = np.array(image)  # (H, W, 3) RGB
         
-        # Extract channels - swap R and B for BGR display
-        r = img_np[..., 2]  # Use blue channel as red
+        # Extract channels - NO swap, let MADCTL handle BGR
+        r = img_np[..., 0]
         g = img_np[..., 1]
-        b = img_np[..., 0]  # Use red channel as blue
+        b = img_np[..., 2]
         
-        # Convert to 565
+        # Convert to RGB565 (display will swap to BGR internally due to MADCTL)
         rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
         
         # Flatten and convert to bytes (Big Endian)
