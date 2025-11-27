@@ -156,24 +156,20 @@ class ST7796S:
         if image.width != self.width or image.height != self.height:
             image = image.resize((self.width, self.height))
             
-        # Convert to BGR565 for ST7796S
-        # Test showed: 0xF800 (R in high bits) displays as BLUE
-        # So display puts high bits into Blue channel
-        # We need to send BGR565: B in high bits, R in low bits
-        
+        # Convert to RGB565 - standard format (confirmed by color test)
+        # RGB565: RRRRR GGGGGG BBBBB
         img_np = np.array(image)  # (H, W, 3) RGB
         
-        # For BGR565: Blue in high 5 bits, Green in middle 6, Red in low 5
         r = img_np[..., 0]
         g = img_np[..., 1]
         b = img_np[..., 2]
         
-        # BGR565 format: BBBBB GGGGGG RRRRR
-        bgr565 = ((b & 0xF8) << 8) | ((g & 0xFC) << 3) | (r >> 3)
+        # Standard RGB565 format
+        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
         
         # Flatten and convert to bytes (Big Endian)
-        high_byte = (bgr565 >> 8).astype(np.uint8)
-        low_byte = (bgr565 & 0xFF).astype(np.uint8)
+        high_byte = (rgb565 >> 8).astype(np.uint8)
+        low_byte = (rgb565 & 0xFF).astype(np.uint8)
         
         pixel_data = np.dstack((high_byte, low_byte)).flatten().tolist()
         
