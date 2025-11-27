@@ -108,9 +108,9 @@ class ST7796S:
         
         # Memory Access Control
         # Bits: MY MX MV ML BGR MH 0 0
-        # 0x48 = 0100 1000 = MX=1, BGR=1
+        # 0x40 = 0100 0000 = MX=1, BGR=0 (RGB mode)
         self.command(MADCTL)
-        self.data(0x48)
+        self.data(0x40)
         
         # Display Inversion On (some displays need INVOFF instead)
         self.command(INVON)
