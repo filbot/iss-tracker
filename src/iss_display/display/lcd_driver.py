@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # ST7796S Command Constants
 SWRESET = 0x01
+SLPIN   = 0x10  # Sleep in (low power mode)
 SLPOUT  = 0x11
 NORON   = 0x13
 INVOFF  = 0x20
@@ -212,32 +213,45 @@ class ST7796S:
             self.spi.writebytes2(pixel_bytes[i:i+chunk_size])
 
     def close(self):
-        """Properly shut down the display - turn off backlight and display."""
+        """Properly shut down the display - clear, turn off, and enter sleep."""
         try:
-            # 1. Turn off backlight first
+            # 1. Turn off backlight FIRST
             GPIO.output(self.bl, GPIO.LOW)
             
-            # 2. Send display off command
-            self._write_command(DISPOFF)
-            time.sleep(0.02)
-            
-            # 3. Clear the display to black (prevents ghost image)
+            # 2. Fill with black multiple times to fully discharge LCD pixels
+            # This helps prevent image retention/ghosting
             black_screen = bytes([0x00, 0x00] * (self.width * self.height))
-            self._write_command(RAMWR)
-            GPIO.output(self.dc, GPIO.HIGH)
-            for i in range(0, len(black_screen), 32768):
-                self.spi.writebytes2(black_screen[i:i+32768])
+            for _ in range(3):  # Multiple passes to fully discharge
+                self.set_window(0, 0, self.width - 1, self.height - 1)
+                self._write_command(RAMWR)
+                GPIO.output(self.dc, GPIO.HIGH)
+                for i in range(0, len(black_screen), 32768):
+                    self.spi.writebytes2(black_screen[i:i+32768])
+                time.sleep(0.05)
             
-            # 4. Set reset pin low to fully disable display
+            # 3. Turn off the display output
+            self._write_command(DISPOFF)
+            time.sleep(0.05)
+            
+            # 4. Enter sleep mode (minimum power, internal oscillator off)
+            self._write_command(SLPIN)
+            time.sleep(0.12)  # 120ms required per datasheet
+            
+            # 5. Hardware reset - hold low to fully disable controller
             GPIO.output(self.rst, GPIO.LOW)
-            time.sleep(0.01)
+            
+            # 6. Ensure backlight stays off
+            GPIO.output(self.bl, GPIO.LOW)
             
             logger.info("Display turned off and cleared")
         except Exception as e:
             logger.warning(f"Error during display shutdown: {e}")
         finally:
-            # 5. Clean up resources
-            self.spi.close()
+            try:
+                self.spi.close()
+            except:
+                pass
+            GPIO.cleanup()
             GPIO.cleanup()
 
 
