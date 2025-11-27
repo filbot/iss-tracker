@@ -320,8 +320,11 @@ class LcdDisplay:
     def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
         """Render a single globe frame at the given central longitude."""
         # Create a square figure for the globe to keep it circular
-        # Use the smaller dimension to ensure globe fits
-        globe_size = min(self.width, self.height)
+        # Use 75% of the smaller dimension to leave room for ISS orbit and padding
+        self.globe_scale = 0.70  # Globe takes 70% of available space
+        self.iss_orbit_scale = 1.10  # ISS orbits at ~10% above Earth surface (exaggerated for visibility)
+        
+        globe_size = int(min(self.width, self.height) * self.globe_scale)
         dpi = 100
         fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor='black')
         
@@ -368,6 +371,11 @@ class LcdDisplay:
         x_offset = (self.width - globe_img.width) // 2
         y_offset = (self.height - globe_img.height) // 2
         final_img.paste(globe_img, (x_offset, y_offset))
+        
+        # Store globe geometry for ISS positioning
+        self.globe_center_x = self.width // 2
+        self.globe_center_y = self.height // 2
+        self.globe_radius_px = globe_img.width // 2
         
         return final_img
 
@@ -423,28 +431,8 @@ class LcdDisplay:
         return cos_c > 0
 
     def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, central_lon: float):
-        """Draw ISS marker on the frame at the correct position using Cartopy projection math."""
+        """Draw ISS marker at correct orbital altitude above Earth's surface."""
         from PIL import ImageDraw
-        
-        # Calculate if ISS is visible from this view angle
-        # The ISS is visible if it's within ~90 degrees of the central longitude
-        lon_diff = abs(lon - central_lon)
-        if lon_diff > 180:
-            lon_diff = 360 - lon_diff
-        
-        # Also check latitude visibility (within ~90 degrees from equator for our 0° central_lat view)
-        if lon_diff > 90:
-            # ISS is on the far side of the globe
-            return
-        
-        # Project ISS position to screen coordinates using orthographic projection math
-        # Orthographic projection formulas:
-        # x = R * cos(lat) * sin(lon - central_lon)
-        # y = R * cos(central_lat) * sin(lat) - sin(central_lat) * cos(lat) * cos(lon - central_lon)
-        # For central_lat = 0:
-        # x = R * cos(lat) * sin(lon - central_lon)
-        # y = R * sin(lat)
-        
         import math
         
         lat_rad = math.radians(lat)
@@ -452,43 +440,64 @@ class LcdDisplay:
         central_lon_rad = math.radians(central_lon)
         central_lat_rad = 0  # We're viewing from equator
         
-        # Orthographic projection
-        x = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
-        y = math.cos(central_lat_rad) * math.sin(lat_rad) - math.sin(central_lat_rad) * math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
-        
-        # Check if point is on visible hemisphere
+        # Check if ISS is on visible hemisphere
         # cos(c) = sin(central_lat) * sin(lat) + cos(central_lat) * cos(lat) * cos(lon - central_lon)
-        cos_c = math.sin(central_lat_rad) * math.sin(lat_rad) + math.cos(central_lat_rad) * math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
         
         if cos_c < 0:
-            # Point is on far side
+            # ISS is on far side of Earth - don't draw
             return
         
-        # Convert to pixel coordinates
-        # x and y are in range [-1, 1] representing the globe
-        # The globe typically fills about 80% of the smaller dimension
-        globe_radius = min(self.width, self.height) * 0.4
-        cx, cy = self.width // 2, self.height // 2
+        # Orthographic projection for a point on Earth's surface
+        # x = cos(lat) * sin(lon - central_lon)
+        # y = sin(lat)  (for central_lat = 0)
+        x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
+        y_surface = math.sin(lat_rad)
         
-        px = int(cx + x * globe_radius)
-        py = int(cy - y * globe_radius)  # Flip Y for image coordinates
+        # ISS orbital altitude factor
+        # Real ISS orbits at ~420km, Earth radius ~6371km, so altitude ratio ~0.066
+        # We exaggerate this to ~10% for visibility on the small display
+        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
+        
+        # The ISS position is radially outward from Earth center through the surface point
+        # For orthographic projection, we scale the surface coordinates
+        x_iss = x_surface * iss_altitude_factor
+        y_iss = y_surface * iss_altitude_factor
+        
+        # Convert to pixel coordinates using stored globe geometry
+        cx = getattr(self, 'globe_center_x', self.width // 2)
+        cy = getattr(self, 'globe_center_y', self.height // 2)
+        globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
+        
+        px = int(cx + x_iss * globe_radius)
+        py = int(cy - y_iss * globe_radius)  # Flip Y for image coordinates
         
         # Check bounds
         if 0 <= px < self.width and 0 <= py < self.height:
             draw = ImageDraw.Draw(image)
             
-            # Draw glow effect (red)
-            for i in range(3):
-                r = 10 - i * 3
-                color = (255, 50 + i * 30, 50 + i * 30)
-                draw.ellipse([px-r, py-r, px+r, py+r], fill=color)
+            # Draw orbital path arc (subtle)
+            # This shows a portion of the orbit as a thin arc
+            orbit_radius = int(globe_radius * iss_altitude_factor)
+            arc_color = (100, 40, 40)  # Dim red
+            draw.arc([cx - orbit_radius, cy - orbit_radius, 
+                      cx + orbit_radius, cy + orbit_radius],
+                     start=0, end=360, fill=arc_color, width=1)
             
-            # Draw solid red marker
-            r_marker = 5
+            # Draw ISS marker with glow
+            # Outer glow
+            for i in range(3):
+                r = 8 - i * 2
+                alpha = 180 - i * 50
+                glow_color = (255, int(50 + i * 40), int(50 + i * 40))
+                draw.ellipse([px-r, py-r, px+r, py+r], fill=glow_color)
+            
+            # Solid red core
+            r_marker = 4
             draw.ellipse([px-r_marker, py-r_marker, px+r_marker, py+r_marker], fill=(255, 0, 0))
             
-            # Draw white center dot
-            r_center = 2
+            # White center dot
+            r_center = 1
             draw.ellipse([px-r_center, py-r_center, px+r_center, py+r_center], fill=(255, 255, 255))
 
     def close(self):
