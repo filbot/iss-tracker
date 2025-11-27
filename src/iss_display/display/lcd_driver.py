@@ -266,14 +266,18 @@ class LcdDisplay:
 
     def _init_hud(self):
         """Initialize HUD fonts and colors."""
-        # Try to load a monospace font, fall back to default
-        self.hud_font_size = 14
-        self.hud_font_small = 11
+        # Larger fonts for better readability on 320x480 display
+        self.hud_font_size = 18       # Main font size
+        self.hud_font_small = 14      # Secondary font size
+        self.hud_font_label = 12      # Label font size
         
         # Try system monospace fonts
         mono_fonts = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
             "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
             "/System/Library/Fonts/Menlo.ttc",  # macOS
             "/System/Library/Fonts/Monaco.ttf",  # macOS
@@ -281,11 +285,13 @@ class LcdDisplay:
         
         self.hud_font = None
         self.hud_font_sm = None
+        self.hud_font_lbl = None
         
         for font_path in mono_fonts:
             try:
                 self.hud_font = ImageFont.truetype(font_path, self.hud_font_size)
                 self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_small)
+                self.hud_font_lbl = ImageFont.truetype(font_path, self.hud_font_label)
                 logger.info(f"Loaded HUD font: {font_path}")
                 break
             except (OSError, IOError):
@@ -295,18 +301,20 @@ class LcdDisplay:
             # Fall back to default bitmap font
             self.hud_font = ImageFont.load_default()
             self.hud_font_sm = self.hud_font
+            self.hud_font_lbl = self.hud_font
             logger.warning("Using default bitmap font for HUD")
         
         # HUD colors (NASA/military style - yellow/amber on dark)
         self.hud_color_primary = (255, 220, 0)      # Bright yellow
         self.hud_color_secondary = (200, 170, 0)    # Dimmer yellow
-        self.hud_color_label = (160, 140, 0)        # Label yellow
-        self.hud_color_border = (120, 100, 0)       # Border yellow
-        self.hud_color_bg = (5, 5, 15)              # Deep dark blue, almost black
+        self.hud_color_label = (140, 120, 0)        # Label yellow (dimmer)
+        self.hud_color_border = (100, 85, 0)        # Border yellow
+        self.hud_color_accent = (255, 180, 0)       # Accent orange-yellow
+        self.hud_color_bg = (8, 8, 20)              # Deep dark blue, almost black
         
-        # HUD bar heights
-        self.hud_top_height = 28
-        self.hud_bottom_height = 28
+        # HUD bar heights - larger for better readability
+        self.hud_top_height = 44
+        self.hud_bottom_height = 44
 
     def _image_to_rgb565_bytes(self, image: Image.Image) -> bytes:
         """Convert PIL Image to RGB565 bytes for direct display."""
@@ -499,35 +507,38 @@ class LcdDisplay:
         # ═══════════════════════════════════════════════════════════
         top_h = self.hud_top_height
         
-        # Semi-transparent background
-        draw.rectangle([0, 0, w, top_h], fill=self.hud_color_bg)
-        draw.line([0, top_h, w, top_h], fill=self.hud_color_border, width=1)
+        # Background with subtle gradient effect (two-tone)
+        draw.rectangle([0, 0, w, top_h - 1], fill=self.hud_color_bg)
+        draw.rectangle([0, top_h - 2, w, top_h], fill=self.hud_color_border)
         
         # Format latitude with N/S
         lat = telemetry.latitude
         lat_dir = "N" if lat >= 0 else "S"
-        lat_str = f"{abs(lat):06.2f}°{lat_dir}"
+        lat_str = f"{abs(lat):05.2f}°{lat_dir}"
         
         # Format longitude with E/W
         lon = telemetry.longitude
         lon_dir = "E" if lon >= 0 else "W"
-        lon_str = f"{abs(lon):07.2f}°{lon_dir}"
+        lon_str = f"{abs(lon):06.2f}°{lon_dir}"
         
-        # Draw bordered data cells
-        cell_y = 4
-        cell_h = top_h - 8
+        # Cell dimensions for larger HUD
+        cell_padding = 6
+        cell_h = top_h - (cell_padding * 2)
+        cell_y = cell_padding
         
-        # LAT cell
-        self._draw_data_cell(draw, 4, cell_y, 85, cell_h, "LAT", lat_str)
+        # LAT cell - wider for larger font
+        self._draw_data_cell_large(draw, 6, cell_y, 105, cell_h, "LAT", lat_str)
         
-        # LON cell  
-        self._draw_data_cell(draw, 93, cell_y, 95, cell_h, "LON", lon_str)
+        # LON cell - wider for larger font
+        self._draw_data_cell_large(draw, 117, cell_y, 115, cell_h, "LON", lon_str)
         
-        # ISS label/status (right side)
-        iss_label = "◉ ISS ZARYA"
+        # ISS label/status (right side) - larger and more prominent
+        iss_label = "● ISS"
         label_bbox = draw.textbbox((0, 0), iss_label, font=self.hud_font)
         label_w = label_bbox[2] - label_bbox[0]
-        draw.text((w - label_w - 8, 7), iss_label, fill=self.hud_color_primary, font=self.hud_font)
+        label_h = label_bbox[3] - label_bbox[1]
+        label_y = (top_h - label_h) // 2
+        draw.text((w - label_w - 10, label_y), iss_label, fill=self.hud_color_primary, font=self.hud_font)
         
         # ═══════════════════════════════════════════════════════════
         # BOTTOM BAR - Velocity and altitude
@@ -535,31 +546,33 @@ class LcdDisplay:
         bot_h = self.hud_bottom_height
         bot_y = h - bot_h
         
-        # Semi-transparent background
-        draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
-        draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border, width=1)
+        # Background with subtle gradient effect
+        draw.rectangle([0, bot_y, w, bot_y + 2], fill=self.hud_color_border)
+        draw.rectangle([0, bot_y + 2, w, h], fill=self.hud_color_bg)
         
-        cell_y = bot_y + 4
-        cell_h = bot_h - 8
+        cell_y = bot_y + cell_padding
+        cell_h = bot_h - (cell_padding * 2)
         
-        # ALT cell
+        # ALT cell - altitude in km
         alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
         alt_str = f"{alt_km:,.0f} KM"
-        self._draw_data_cell(draw, 4, cell_y, 95, cell_h, "ALT", alt_str)
+        self._draw_data_cell_large(draw, 6, cell_y, 115, cell_h, "ALT", alt_str)
         
-        # VEL cell
+        # VEL cell - velocity
         vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
-        vel_str = f"{vel_kmh:,.0f} KM/H"
-        self._draw_data_cell(draw, 103, cell_y, 115, cell_h, "VEL", vel_str)
+        vel_str = f"{vel_kmh:,.0f}"
+        self._draw_data_cell_large(draw, 127, cell_y, 120, cell_h, "KM/H", vel_str)
         
-        # Orbit indicator (right side)
-        orbit_str = "ORBIT 16/DAY"
+        # Orbit info (right side)
+        orbit_str = "~16 ORB/DAY"
         orb_bbox = draw.textbbox((0, 0), orbit_str, font=self.hud_font_sm)
         orb_w = orb_bbox[2] - orb_bbox[0]
-        draw.text((w - orb_w - 8, bot_y + 8), orbit_str, fill=self.hud_color_secondary, font=self.hud_font_sm)
+        orb_h = orb_bbox[3] - orb_bbox[1]
+        orb_y = bot_y + (bot_h - orb_h) // 2
+        draw.text((w - orb_w - 10, orb_y), orbit_str, fill=self.hud_color_secondary, font=self.hud_font_sm)
 
     def _draw_data_cell(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
-        """Draw a bordered data cell with label and value."""
+        """Draw a bordered data cell with label and value (legacy small version)."""
         # Border
         draw.rectangle([x, y, x + w, y + h], outline=self.hud_color_border)
         
@@ -570,6 +583,25 @@ class LcdDisplay:
         val_bbox = draw.textbbox((0, 0), value, font=self.hud_font_sm)
         val_w = val_bbox[2] - val_bbox[0]
         draw.text((x + w - val_w - 3, y + 1), value, fill=self.hud_color_primary, font=self.hud_font_sm)
+
+    def _draw_data_cell_large(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
+        """Draw a larger bordered data cell with stacked label and value."""
+        # Outer border
+        draw.rectangle([x, y, x + w, y + h], outline=self.hud_color_border)
+        
+        # Inner subtle highlight line at top
+        draw.line([x + 1, y + 1, x + w - 1, y + 1], fill=(40, 35, 10))
+        
+        # Label (top, smaller, dimmer)
+        label_font = getattr(self, 'hud_font_lbl', self.hud_font_sm)
+        draw.text((x + 5, y + 3), label, fill=self.hud_color_label, font=label_font)
+        
+        # Value (bottom, larger, brighter) - right-aligned
+        val_bbox = draw.textbbox((0, 0), value, font=self.hud_font_sm)
+        val_w = val_bbox[2] - val_bbox[0]
+        val_h = val_bbox[3] - val_bbox[1]
+        val_y = y + h - val_h - 4
+        draw.text((x + w - val_w - 5, val_y), value, fill=self.hud_color_primary, font=self.hud_font_sm)
 
     def _add_iss_marker_to_image(self, image: Image.Image, lat: float, lon: float, central_lon: float):
         """Draw ISS marker on a PIL Image (used when HUD is drawn)."""
