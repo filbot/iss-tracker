@@ -162,6 +162,16 @@ class ST7796S:
         
         self.command(RAMWR)
 
+    def display_raw(self, pixel_bytes: bytes):
+        """Display pre-converted RGB565 data directly - fastest path."""
+        self.set_window(0, 0, self.width - 1, self.height - 1)
+        GPIO.output(self.dc, GPIO.HIGH)
+        
+        # Write in larger chunks for better throughput
+        chunk_size = 32768  # 32KB chunks
+        for i in range(0, len(pixel_bytes), chunk_size):
+            self.spi.writebytes2(pixel_bytes[i:i+chunk_size])
+
     def display(self, image: Image.Image):
         if image.width != self.width or image.height != self.height:
             image = image.resize((self.width, self.height))
@@ -181,20 +191,18 @@ class ST7796S:
         # Blue:  5 bits in positions 4-0
         rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
         
-        # Split into bytes (Big Endian for ST7796S)
-        high_byte = (rgb565 >> 8).astype(np.uint8)
-        low_byte = (rgb565 & 0xFF).astype(np.uint8)
-        
-        pixel_data = np.dstack((high_byte, low_byte)).flatten().tolist()
+        # Convert to bytes efficiently using numpy's tobytes()
+        # Swap bytes for big-endian format expected by display
+        rgb565_be = rgb565.astype('>u2')  # Big-endian uint16
+        pixel_bytes = rgb565_be.tobytes()
         
         self.set_window(0, 0, self.width - 1, self.height - 1)
-        
         GPIO.output(self.dc, GPIO.HIGH)
         
-        # Write in chunks
-        chunk_size = 4096
-        for i in range(0, len(pixel_data), chunk_size):
-            self.spi.writebytes(pixel_data[i:i+chunk_size])
+        # Write in larger chunks using writebytes2 (accepts bytes directly)
+        chunk_size = 32768  # 32KB chunks
+        for i in range(0, len(pixel_bytes), chunk_size):
+            self.spi.writebytes2(pixel_bytes[i:i+chunk_size])
 
     def close(self):
         GPIO.cleanup()
@@ -225,8 +233,10 @@ class LcdDisplay:
             logger.error("Cartopy is not installed. Please run: pip install cartopy")
             raise ImportError("Cartopy is required for rendering the globe")
         
-        # Pre-rendered frame cache
+        # Pre-rendered frame cache - stores PIL Images for ISS overlay
         self.frame_cache: List[Image.Image] = []
+        # Pre-computed RGB565 bytes for frames without ISS marker - fastest display path
+        self.frame_bytes_cache: List[bytes] = []
         self.num_frames = 72  # 72 frames = 5 degrees per frame for full rotation
         self.current_frame = 0
         self.frames_generated = False
@@ -240,10 +250,31 @@ class LcdDisplay:
         
         # Try to load cached frames or generate them
         self._load_or_generate_frames()
+        
+        # Pre-compute RGB565 bytes for all frames
+        self._precompute_rgb565()
+
+    def _image_to_rgb565_bytes(self, image: Image.Image) -> bytes:
+        """Convert PIL Image to RGB565 bytes for direct display."""
+        img_np = np.array(image)
+        r = img_np[..., 0].astype(np.uint16)
+        g = img_np[..., 1].astype(np.uint16)
+        b = img_np[..., 2].astype(np.uint16)
+        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        rgb565_be = rgb565.astype('>u2')
+        return rgb565_be.tobytes()
+
+    def _precompute_rgb565(self):
+        """Pre-compute RGB565 bytes for all cached frames."""
+        logger.info("Pre-computing RGB565 frame data...")
+        self.frame_bytes_cache = []
+        for frame in self.frame_cache:
+            self.frame_bytes_cache.append(self._image_to_rgb565_bytes(frame))
+        logger.info(f"Pre-computed {len(self.frame_bytes_cache)} frames")
 
     def _load_or_generate_frames(self):
         """Load pre-rendered frames from cache or generate them."""
-        cache_file = self.cache_dir / "cartopy_frames.npz"
+        cache_file = self.cache_dir / "cartopy_frames_v2.npz"
         
         if cache_file.exists():
             logger.info("Loading cached Earth frames...")
@@ -278,7 +309,7 @@ class LcdDisplay:
         logger.info("Saving frames to cache...")
         try:
             frame_dict = {f'frame_{i}': np.array(frame) for i, frame in enumerate(self.frame_cache)}
-            np.savez_compressed(self.cache_dir / "cartopy_frames.npz", **frame_dict)
+            np.savez_compressed(self.cache_dir / "cartopy_frames_v2.npz", **frame_dict)
             logger.info("Frames cached successfully")
         except Exception as e:
             logger.warning(f"Failed to save cache: {e}")
@@ -349,28 +380,47 @@ class LcdDisplay:
             logger.warning("Frames not yet generated")
             return
         
-        # Get current frame
-        base_frame = self.frame_cache[self.current_frame].copy()
-        
         # Calculate the central longitude of this frame
         central_lon = (self.current_frame * (360 / self.num_frames)) - 180
         
-        # Add ISS marker overlay
-        self._add_iss_marker(base_frame, lat, lon, central_lon)
+        # Check if ISS is visible on this frame
+        iss_visible = self._is_iss_visible(lat, lon, central_lon)
         
-        self.image = base_frame
+        if iss_visible:
+            # ISS is visible - need to draw marker, use slower path
+            base_frame = self.frame_cache[self.current_frame].copy()
+            self._add_iss_marker(base_frame, lat, lon, central_lon)
+            self.image = base_frame
+            
+            if self.driver:
+                # Convert and send
+                pixel_bytes = self._image_to_rgb565_bytes(self.image)
+                self.driver.display_raw(pixel_bytes)
+        else:
+            # ISS not visible - use pre-computed bytes (fastest path)
+            self.image = self.frame_cache[self.current_frame]
+            
+            if self.driver:
+                self.driver.display_raw(self.frame_bytes_cache[self.current_frame])
         
         # Advance to next frame
         self.current_frame = (self.current_frame + 1) % self.num_frames
         
-        # Send to Hardware
-        if self.driver:
-            self.driver.display(self.image)
-        
-        # Save preview
-        if self.settings.preview_dir:
+        # Save preview (only occasionally to reduce disk I/O)
+        if self.settings.preview_dir and self.current_frame % 12 == 0:
             preview_path = self.settings.preview_dir / "lcd_preview.png"
             self.image.save(preview_path)
+
+    def _is_iss_visible(self, lat: float, lon: float, central_lon: float) -> bool:
+        """Check if ISS is visible from current view angle."""
+        import math
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        central_lon_rad = math.radians(central_lon)
+        
+        # cos(c) determines if point is on visible hemisphere
+        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        return cos_c > 0
 
     def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, central_lon: float):
         """Draw ISS marker on the frame at the correct position using Cartopy projection math."""

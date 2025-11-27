@@ -92,6 +92,6 @@ class Settings:
             gpio_bl=int(os.getenv("GPIO_BL", "18")),
             spi_bus=int(os.getenv("SPI_BUS", "0")),
             spi_device=int(os.getenv("SPI_DEVICE", "0")),
-            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "10000000")),
+            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "40000000")),  # 40MHz - ST7796S max
         )
 
