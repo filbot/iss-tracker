@@ -11,6 +11,7 @@ This will create var/frame_cache/cartopy_frames_v2.npz which you can copy to the
 
 import io
 import logging
+import os
 from pathlib import Path
 
 import matplotlib
@@ -29,9 +30,10 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Display settings (must match Pi config)
-DISPLAY_WIDTH = 480
-DISPLAY_HEIGHT = 320
+# Display settings - MUST match Pi config!
+# Default matches config.py defaults (portrait mode 320x480)
+DISPLAY_WIDTH = int(os.getenv("DISPLAY_WIDTH", "320"))
+DISPLAY_HEIGHT = int(os.getenv("DISPLAY_HEIGHT", "480"))
 NUM_FRAMES = 72  # 5 degrees per frame
 GLOBE_SCALE = 0.70
 

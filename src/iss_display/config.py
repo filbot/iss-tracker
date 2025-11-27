@@ -68,8 +68,8 @@ class Settings:
             mapbox_zoom=int(os.getenv("MAPBOX_ZOOM", "2")),
             pin_color=os.getenv("MAP_PIN_COLOR", "#ED1C24"),
             iss_api_url=os.getenv("ISS_API_URL", "https://api.wheretheiss.at/v1/satellites/25544"),
-            display_width=int(os.getenv("DISPLAY_WIDTH", "480")),
-            display_height=int(os.getenv("DISPLAY_HEIGHT", "320")),
+            display_width=int(os.getenv("DISPLAY_WIDTH", "320")),
+            display_height=int(os.getenv("DISPLAY_HEIGHT", "480")),
             display_has_red=_as_bool(os.getenv("DISPLAY_HAS_RED", "true"), default=True),
             # New UI Settings
             ui_background_color=os.getenv("UI_BACKGROUND_COLOR", "#000033"), # Dark Blue
@@ -92,6 +92,6 @@ class Settings:
             gpio_bl=int(os.getenv("GPIO_BL", "18")),
             spi_bus=int(os.getenv("SPI_BUS", "0")),
             spi_device=int(os.getenv("SPI_DEVICE", "0")),
-            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "20000000")),  # 20MHz - safe for most Pi models
+            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "40000000")),  # 40MHz - ST7796S max
         )
 
