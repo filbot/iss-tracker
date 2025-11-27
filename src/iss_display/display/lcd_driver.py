@@ -119,6 +119,9 @@ class ST7796S:
         
         # Turn on backlight
         GPIO.output(self.bl, GPIO.HIGH)
+        
+        # Clear screen to black
+        self._test_fill(0x0000)
     
     def _test_fill(self, color: int):
         """Fill the entire screen with a solid color (RGB565)."""
