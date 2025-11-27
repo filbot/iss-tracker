@@ -297,12 +297,12 @@ class LcdDisplay:
             self.hud_font_sm = self.hud_font
             logger.warning("Using default bitmap font for HUD")
         
-        # HUD colors (NASA/military style - green/amber on black)
-        self.hud_color_primary = (0, 255, 136)      # Bright green
-        self.hud_color_secondary = (0, 180, 100)    # Dimmer green
-        self.hud_color_label = (0, 140, 80)         # Label green
-        self.hud_color_border = (0, 100, 60)        # Border green
-        self.hud_color_bg = (0, 20, 10)             # Dark background
+        # HUD colors (NASA/military style - yellow/amber on dark)
+        self.hud_color_primary = (255, 220, 0)      # Bright yellow
+        self.hud_color_secondary = (200, 170, 0)    # Dimmer yellow
+        self.hud_color_label = (160, 140, 0)        # Label yellow
+        self.hud_color_border = (120, 100, 0)       # Border yellow
+        self.hud_color_bg = (5, 5, 15)              # Deep dark blue, almost black
         
         # HUD bar heights
         self.hud_top_height = 28
@@ -378,15 +378,19 @@ class LcdDisplay:
         self.globe_scale = 0.70  # Globe takes 70% of available space
         self.iss_orbit_scale = 1.10  # ISS orbits at ~10% above Earth surface (exaggerated for visibility)
         
+        # Deep dark blue background color
+        bg_color = '#050510'  # Almost black with slight blue tint
+        bg_rgb = (5, 5, 16)
+        
         globe_size = int(min(self.width, self.height) * self.globe_scale)
         dpi = 100
-        fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor='black')
+        fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor=bg_color)
         
         # Create Orthographic projection centered on the given longitude
         projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
         
         ax = fig.add_subplot(1, 1, 1, projection=projection)
-        ax.set_facecolor('black')
+        ax.set_facecolor(bg_color)
         
         # Set the global extent
         ax.set_global()
@@ -411,15 +415,15 @@ class LcdDisplay:
         
         # Render to image
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=dpi, facecolor='black', edgecolor='none',
+        fig.savefig(buf, format='png', dpi=dpi, facecolor=bg_color, edgecolor='none',
                     bbox_inches='tight', pad_inches=0)
         buf.seek(0)
         
         globe_img = Image.open(buf).convert('RGB')
         plt.close(fig)
         
-        # Create the final image at display size with black background
-        final_img = Image.new('RGB', (self.width, self.height), (0, 0, 0))
+        # Create the final image at display size with deep dark blue background
+        final_img = Image.new('RGB', (self.width, self.height), bg_rgb)
         
         # Center the globe on the display
         x_offset = (self.width - globe_img.width) // 2

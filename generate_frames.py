@@ -40,14 +40,18 @@ GLOBE_SCALE = 0.70
 
 def render_globe_frame(central_lon: float, central_lat: float = 0) -> Image.Image:
     """Render a single globe frame at the given central longitude."""
+    # Deep dark blue background color (almost black with slight blue tint)
+    bg_color = '#050510'
+    bg_rgb = (5, 5, 16)
+    
     globe_size = int(min(DISPLAY_WIDTH, DISPLAY_HEIGHT) * GLOBE_SCALE)
     dpi = 100
-    fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor='black')
+    fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor=bg_color)
     
     projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
     
     ax = fig.add_subplot(1, 1, 1, projection=projection)
-    ax.set_facecolor('black')
+    ax.set_facecolor(bg_color)
     ax.set_global()
     
     # Add features
@@ -61,15 +65,15 @@ def render_globe_frame(central_lon: float, central_lat: float = 0) -> Image.Imag
     
     # Render to image
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=dpi, facecolor='black', edgecolor='none',
+    fig.savefig(buf, format='png', dpi=dpi, facecolor=bg_color, edgecolor='none',
                 bbox_inches='tight', pad_inches=0)
     buf.seek(0)
     
     globe_img = Image.open(buf).convert('RGB')
     plt.close(fig)
     
-    # Create final image centered on display
-    final_img = Image.new('RGB', (DISPLAY_WIDTH, DISPLAY_HEIGHT), (0, 0, 0))
+    # Create final image centered on display with deep dark blue background
+    final_img = Image.new('RGB', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_rgb)
     x_offset = (DISPLAY_WIDTH - globe_img.width) // 2
     y_offset = (DISPLAY_HEIGHT - globe_img.height) // 2
     final_img.paste(globe_img, (x_offset, y_offset))
