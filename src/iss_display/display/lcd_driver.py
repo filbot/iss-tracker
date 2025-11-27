@@ -691,54 +691,122 @@ class LcdDisplay:
         draw.text((x + w - val_w - 5, val_y), value, fill=self.hud_color_primary, font=self.hud_font_sm)
 
     def _add_iss_marker_to_image(self, image: Image.Image, lat: float, lon: float, central_lon: float):
-        """Draw ISS marker on a PIL Image (used when HUD is drawn)."""
+        """Draw ISS marker on a PIL Image with realistic Earth occlusion.
+        
+        The ISS orbits at ~1.10x Earth radius (exaggerated for visibility).
+        When the ISS goes behind the Earth, it should be occluded by the planet.
+        Near the limb, we fade the marker to simulate it going behind.
+        """
         lat_rad = math.radians(lat)
         lon_rad = math.radians(lon)
         central_lon_rad = math.radians(central_lon)
         
+        # cos_c = cosine of angle between view vector and ISS position
+        # cos_c = 1: directly facing us, cos_c = 0: at limb, cos_c = -1: directly behind
         cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
-        if cos_c < 0:
-            return
         
+        # Calculate the point on Earth's surface directly below ISS
         x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
         y_surface = math.sin(lat_rad)
         
+        # ISS altitude factor (how far above Earth surface)
         iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
+        
+        # ISS position in normalized coordinates
         x_iss = x_surface * iss_altitude_factor
         y_iss = y_surface * iss_altitude_factor
         
+        # Calculate if ISS is behind the Earth's visible disk
+        # The ISS is behind if its ground track is on the back side AND
+        # it's not high enough to peek over the limb
+        
+        # For a sphere of radius 1.0, a satellite at radius R is visible when:
+        # cos_c > -sqrt(1 - 1/R^2)  (geometric horizon)
+        # For R=1.10: threshold = -sqrt(1 - 1/1.21) = -sqrt(0.174) ≈ -0.417
+        horizon_threshold = -math.sqrt(1 - 1 / (iss_altitude_factor ** 2))
+        
+        if cos_c < horizon_threshold:
+            # ISS is completely behind Earth - don't draw
+            return
+        
+        # Calculate opacity for limb transition
+        # Fade from full opacity at cos_c=0.1 to zero at horizon_threshold
+        fade_start = 0.05  # Start fading just before the limb
+        if cos_c < fade_start:
+            # Normalize to 0-1 range: 1 at fade_start, 0 at horizon_threshold
+            opacity = (cos_c - horizon_threshold) / (fade_start - horizon_threshold)
+            opacity = max(0.0, min(1.0, opacity))
+        else:
+            opacity = 1.0
+        
+        # Get globe center and radius
         cx = getattr(self, 'globe_center_x', self.width // 2)
         cy = getattr(self, 'globe_center_y', self.height // 2)
         globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
         
+        # Screen position
         px = int(cx + x_iss * globe_radius)
         py = int(cy - y_iss * globe_radius)
         
         if 0 <= px < self.width and 0 <= py < self.height:
             draw = ImageDraw.Draw(image)
             
-            # Glow effect
+            # Check if marker position is inside the Earth disk (would be occluded)
+            dist_from_center = math.sqrt((px - cx)**2 + (py - cy)**2)
+            
+            if dist_from_center < globe_radius and cos_c < 0:
+                # ISS screen position is inside Earth disk AND it's on back side
+                # This means it's being occluded - reduce opacity further
+                occlusion = 1.0 - (globe_radius - dist_from_center) / globe_radius
+                opacity *= occlusion * 0.3  # Heavily reduce when inside disk
+            
+            if opacity < 0.05:
+                return  # Too faint to bother drawing
+            
+            # Scale marker size with opacity for "distance" effect
+            size_scale = 0.6 + 0.4 * opacity  # 60% to 100% size
+            
+            # Draw marker with opacity
+            # Glow effect (outer rings)
             for i in range(3):
-                r = 7 - i * 2
-                glow_color = (255, int(50 + i * 40), int(50 + i * 40))
+                r = int((7 - i * 2) * size_scale)
+                if r < 1:
+                    continue
+                base_brightness = int((50 + i * 40) * opacity)
+                glow_color = (int(255 * opacity), base_brightness, base_brightness)
                 draw.ellipse([px-r, py-r, px+r, py+r], fill=glow_color)
             
             # Red core
-            draw.ellipse([px-3, py-3, px+3, py+3], fill=(255, 0, 0))
+            core_r = max(1, int(3 * size_scale))
+            core_color = (int(255 * opacity), 0, 0)
+            draw.ellipse([px-core_r, py-core_r, px+core_r, py+core_r], fill=core_color)
             
-            # White center
-            draw.ellipse([px-1, py-1, px+1, py+1], fill=(255, 255, 255))
+            # White center dot
+            if opacity > 0.5:
+                center_brightness = int(255 * opacity)
+                draw.ellipse([px-1, py-1, px+1, py+1], fill=(center_brightness, center_brightness, center_brightness))
 
     def _is_iss_visible(self, lat: float, lon: float, central_lon: float) -> bool:
-        """Check if ISS is visible from current view angle."""
-        import math
+        """Check if ISS is at least partially visible from current view angle.
+        
+        Returns True if ISS should be drawn (even if partially occluded).
+        The actual occlusion/fading is handled in _add_iss_marker_to_image.
+        """
         lat_rad = math.radians(lat)
         lon_rad = math.radians(lon)
         central_lon_rad = math.radians(central_lon)
         
         # cos(c) determines if point is on visible hemisphere
         cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
-        return cos_c > 0
+        
+        # ISS altitude factor
+        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
+        
+        # Geometric horizon for satellite at this altitude
+        # ISS can peek over the limb - visible until cos_c < horizon_threshold
+        horizon_threshold = -math.sqrt(1 - 1 / (iss_altitude_factor ** 2))
+        
+        return cos_c > horizon_threshold
 
     def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, central_lon: float):
         """Draw ISS marker at correct orbital altitude above Earth's surface."""
