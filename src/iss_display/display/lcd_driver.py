@@ -108,9 +108,10 @@ class ST7796S:
         
         # Memory Access Control
         # Bits: MY MX MV ML BGR MH 0 0
-        # 0x40 = 0100 0000 = MX=1, BGR=0 (RGB mode)
+        # 0x48 = 0100 1000 = MX=1, BGR=1
+        # BGR=1 is needed because ST7796S panels typically have BGR subpixel order
         self.command(MADCTL)
-        self.data(0x40)
+        self.data(0x48)
         
         # Display Inversion On (some displays need INVOFF instead)
         self.command(INVON)
@@ -165,18 +166,22 @@ class ST7796S:
         if image.width != self.width or image.height != self.height:
             image = image.resize((self.width, self.height))
             
-        # Convert to RGB565 - standard format (confirmed by color test)
-        # RGB565: RRRRR GGGGGG BBBBB
-        img_np = np.array(image)  # (H, W, 3) RGB
+        # Convert to RGB565 - standard format
+        # RGB565: RRRRR GGGGGG BBBBB (16 bits total)
+        img_np = np.array(image)  # (H, W, 3) RGB as uint8
         
-        r = img_np[..., 0]
-        g = img_np[..., 1]
-        b = img_np[..., 2]
+        # CRITICAL: Must cast to uint16 BEFORE shifting, otherwise numpy uint8 overflows!
+        r = img_np[..., 0].astype(np.uint16)
+        g = img_np[..., 1].astype(np.uint16)
+        b = img_np[..., 2].astype(np.uint16)
         
         # Standard RGB565 format
+        # Red:   5 bits in positions 15-11
+        # Green: 6 bits in positions 10-5
+        # Blue:  5 bits in positions 4-0
         rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
         
-        # Flatten and convert to bytes (Big Endian)
+        # Split into bytes (Big Endian for ST7796S)
         high_byte = (rgb565 >> 8).astype(np.uint8)
         low_byte = (rgb565 & 0xFF).astype(np.uint8)
         
