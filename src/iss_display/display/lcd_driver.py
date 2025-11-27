@@ -308,9 +308,8 @@ class LcdDisplay:
         # Add gridlines
         ax.gridlines(color='#444444', linewidth=0.3, alpha=0.5, linestyle='-')
         
-        # Remove axis frame/border
-        ax.outline_patch.set_visible(False)
-        ax.background_patch.set_visible(True)
+        # Remove axis spines/border (compatible with newer Cartopy versions)
+        ax.spines['geo'].set_visible(False)
         
         # Remove all margins
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
