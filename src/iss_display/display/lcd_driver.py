@@ -127,6 +127,9 @@ class ST7796S:
         # Turn on backlight
         GPIO.output(self.bl, GPIO.HIGH)
         
+        # Set window to full screen once - we'll reuse this for all frames
+        self.set_window(0, 0, self.width - 1, self.height - 1)
+        
         # Clear screen to black
         self._test_fill(0x0000)
     
@@ -164,13 +167,13 @@ class ST7796S:
 
     def display_raw(self, pixel_bytes: bytes):
         """Display pre-converted RGB565 data directly - fastest path."""
-        self.set_window(0, 0, self.width - 1, self.height - 1)
+        # Send RAMWR command to continue writing (window already set at init)
+        self.command(RAMWR)
         GPIO.output(self.dc, GPIO.HIGH)
         
-        # Write in larger chunks for better throughput
-        chunk_size = 32768  # 32KB chunks
-        for i in range(0, len(pixel_bytes), chunk_size):
-            self.spi.writebytes2(pixel_bytes[i:i+chunk_size])
+        # Single large write - spidev can handle it internally
+        # writebytes2 accepts bytes directly and is faster than writebytes
+        self.spi.writebytes2(pixel_bytes)
 
     def display(self, image: Image.Image):
         if image.width != self.width or image.height != self.height:
@@ -394,30 +397,17 @@ class LcdDisplay:
         # Check if ISS is visible on this frame
         iss_visible = self._is_iss_visible(lat, lon, central_lon)
         
-        if iss_visible:
-            # ISS is visible - need to draw marker, use slower path
-            base_frame = self.frame_cache[self.current_frame].copy()
-            self._add_iss_marker(base_frame, lat, lon, central_lon)
-            self.image = base_frame
-            
-            if self.driver:
-                # Convert and send
-                pixel_bytes = self._image_to_rgb565_bytes(self.image)
-                self.driver.display_raw(pixel_bytes)
-        else:
+        if iss_visible and self.driver:
+            # ISS is visible - need to draw marker
+            # Use a shared mutable image to avoid copy overhead
+            base_frame = self.frame_cache[self.current_frame]
+            self._add_iss_marker_fast(base_frame, lat, lon, central_lon)
+        elif self.driver:
             # ISS not visible - use pre-computed bytes (fastest path)
-            self.image = self.frame_cache[self.current_frame]
-            
-            if self.driver:
-                self.driver.display_raw(self.frame_bytes_cache[self.current_frame])
+            self.driver.display_raw(self.frame_bytes_cache[self.current_frame])
         
         # Advance to next frame
         self.current_frame = (self.current_frame + 1) % self.num_frames
-        
-        # Save preview (only occasionally to reduce disk I/O)
-        if self.settings.preview_dir and self.current_frame % 12 == 0:
-            preview_path = self.settings.preview_dir / "lcd_preview.png"
-            self.image.save(preview_path)
 
     def _is_iss_visible(self, lat: float, lon: float, central_lon: float) -> bool:
         """Check if ISS is visible from current view angle."""
@@ -499,6 +489,66 @@ class LcdDisplay:
             # White center dot
             r_center = 1
             draw.ellipse([px-r_center, py-r_center, px+r_center, py+r_center], fill=(255, 255, 255))
+
+    def _add_iss_marker_fast(self, base_frame: Image.Image, lat: float, lon: float, central_lon: float):
+        """
+        Fast path: draw ISS marker directly into RGB565 bytes and send to display.
+        Avoids full image copy and conversion.
+        """
+        import math
+        
+        # Get base frame bytes
+        frame_bytes = bytearray(self.frame_bytes_cache[self.current_frame])
+        
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        central_lon_rad = math.radians(central_lon)
+        
+        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        if cos_c < 0:
+            # ISS on far side - just send base frame
+            self.driver.display_raw(bytes(frame_bytes))
+            return
+        
+        x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
+        y_surface = math.sin(lat_rad)
+        
+        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
+        x_iss = x_surface * iss_altitude_factor
+        y_iss = y_surface * iss_altitude_factor
+        
+        cx = getattr(self, 'globe_center_x', self.width // 2)
+        cy = getattr(self, 'globe_center_y', self.height // 2)
+        globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
+        
+        px = int(cx + x_iss * globe_radius)
+        py = int(cy - y_iss * globe_radius)
+        
+        # Draw a simple bright red marker (5x5 pixels) directly into RGB565 bytes
+        # RGB565 for pure red (255, 0, 0): 0xF800
+        red_high = 0xF8
+        red_low = 0x00
+        # White center: 0xFFFF
+        white_high = 0xFF
+        white_low = 0xFF
+        
+        marker_radius = 3
+        for dy in range(-marker_radius, marker_radius + 1):
+            for dx in range(-marker_radius, marker_radius + 1):
+                mx, my = px + dx, py + dy
+                if 0 <= mx < self.width and 0 <= my < self.height:
+                    dist_sq = dx * dx + dy * dy
+                    # Byte offset: 2 bytes per pixel, row-major
+                    offset = (my * self.width + mx) * 2
+                    
+                    if dist_sq <= 1:  # Center pixel - white
+                        frame_bytes[offset] = white_high
+                        frame_bytes[offset + 1] = white_low
+                    elif dist_sq <= marker_radius * marker_radius:  # Red circle
+                        frame_bytes[offset] = red_high
+                        frame_bytes[offset + 1] = red_low
+        
+        self.driver.display_raw(bytes(frame_bytes))
 
     def close(self):
         if self.driver:
