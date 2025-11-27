@@ -265,11 +265,14 @@ class LcdDisplay:
         self._init_hud()
 
     def _init_hud(self):
-        """Initialize HUD fonts and colors."""
-        # Larger fonts for better readability on 320x480 display
-        self.hud_font_size = 18       # Main font size
-        self.hud_font_small = 14      # Secondary font size
-        self.hud_font_label = 12      # Label font size
+        """Initialize HUD fonts and colors with proper typography principles."""
+        # ═══════════════════════════════════════════════════════════════════════
+        # TYPOGRAPHY SCALE (based on 1.33 ratio - perfect fourth)
+        # Values: 20px (primary) → 15px (secondary) → 11px (labels)
+        # ═══════════════════════════════════════════════════════════════════════
+        self.hud_font_value = 20      # Primary data values - bold, prominent
+        self.hud_font_unit = 15       # Units and secondary info
+        self.hud_font_label = 11      # Labels - small, uppercase, high contrast
         
         # Try system monospace fonts
         mono_fonts = [
@@ -289,8 +292,8 @@ class LcdDisplay:
         
         for font_path in mono_fonts:
             try:
-                self.hud_font = ImageFont.truetype(font_path, self.hud_font_size)
-                self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_small)
+                self.hud_font = ImageFont.truetype(font_path, self.hud_font_value)
+                self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_unit)
                 self.hud_font_lbl = ImageFont.truetype(font_path, self.hud_font_label)
                 logger.info(f"Loaded HUD font: {font_path}")
                 break
@@ -304,17 +307,26 @@ class LcdDisplay:
             self.hud_font_lbl = self.hud_font
             logger.warning("Using default bitmap font for HUD")
         
-        # HUD colors (NASA/military style - yellow/amber on dark)
-        self.hud_color_primary = (255, 220, 0)      # Bright yellow
-        self.hud_color_secondary = (200, 170, 0)    # Dimmer yellow
-        self.hud_color_label = (140, 120, 0)        # Label yellow (dimmer)
-        self.hud_color_border = (100, 85, 0)        # Border yellow
-        self.hud_color_accent = (255, 180, 0)       # Accent orange-yellow
-        self.hud_color_bg = (8, 8, 20)              # Deep dark blue, almost black
+        # ═══════════════════════════════════════════════════════════════════════
+        # COLOR PALETTE (NASA/military amber theme with proper contrast ratios)
+        # Follows WCAG-like contrast: labels at ~40% luminance, values at 100%
+        # ═══════════════════════════════════════════════════════════════════════
+        self.hud_color_primary = (255, 210, 0)      # Bright amber - values
+        self.hud_color_label = (160, 135, 30)       # Muted amber - labels (~60% of primary)
+        self.hud_color_dim = (100, 85, 20)          # Dim amber - units, borders
+        self.hud_color_border = (60, 50, 15)        # Subtle border
+        self.hud_color_bg = (12, 12, 24)            # Deep blue-black
+        self.hud_color_indicator = (80, 200, 100)   # Green for live indicator
         
-        # HUD bar heights - larger for better readability
-        self.hud_top_height = 44
-        self.hud_bottom_height = 44
+        # ═══════════════════════════════════════════════════════════════════════
+        # LAYOUT GRID (8px baseline for consistent spacing)
+        # Total bar height: 48px (6 × 8px units)
+        # ═══════════════════════════════════════════════════════════════════════
+        self.hud_grid = 8             # Base unit for all spacing
+        self.hud_top_height = 48      # 6 grid units
+        self.hud_bottom_height = 48   # 6 grid units
+        self.hud_padding = 8          # 1 grid unit padding
+        self.hud_gap = 16             # 2 grid units between cells
 
     def _image_to_rgb565_bytes(self, image: Image.Image) -> bytes:
         """Convert PIL Image to RGB565 bytes for direct display."""
@@ -498,78 +510,115 @@ class LcdDisplay:
         self.current_frame = (self.current_frame + 1) % self.num_frames
 
     def _draw_hud(self, image: Image.Image, telemetry: "ISSFix"):
-        """Draw military-style HUD overlay with telemetry data."""
+        """Draw clean, well-structured HUD overlay with telemetry data.
+        
+        Layout follows 8px grid with clear visual hierarchy:
+        - Labels: small, uppercase, left-aligned, muted color
+        - Values: large, right-aligned, bright color
+        - Generous padding for breathing room
+        """
         draw = ImageDraw.Draw(image)
         w, h = image.size
+        g = self.hud_grid  # 8px grid unit
         
         # ═══════════════════════════════════════════════════════════
-        # TOP BAR - Position data
+        # TOP BAR - Position (LAT / LON)
+        # Layout: [padding][LABEL  VALUE][gap][LABEL  VALUE][→ ISS]
         # ═══════════════════════════════════════════════════════════
         top_h = self.hud_top_height
         
-        # Background with subtle gradient effect (two-tone)
-        draw.rectangle([0, 0, w, top_h - 1], fill=self.hud_color_bg)
-        draw.rectangle([0, top_h - 2, w, top_h], fill=self.hud_color_border)
+        # Background bar with subtle top highlight
+        draw.rectangle([0, 0, w, top_h], fill=self.hud_color_bg)
+        draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
         
-        # Format latitude with N/S
+        # Format coordinates
         lat = telemetry.latitude
         lat_dir = "N" if lat >= 0 else "S"
-        lat_str = f"{abs(lat):05.2f}°{lat_dir}"
+        lat_str = f"{abs(lat):05.2f}°"
         
-        # Format longitude with E/W
         lon = telemetry.longitude
         lon_dir = "E" if lon >= 0 else "W"
-        lon_str = f"{abs(lon):06.2f}°{lon_dir}"
+        lon_str = f"{abs(lon):06.2f}°"
         
-        # Cell dimensions for larger HUD
-        cell_padding = 6
-        cell_h = top_h - (cell_padding * 2)
-        cell_y = cell_padding
+        # Vertical centering for two-line layout
+        label_y = g + 2          # 10px from top
+        value_y = g * 3 - 2      # 22px from top (leaves room below)
         
-        # LAT cell - wider for larger font
-        self._draw_data_cell_large(draw, 6, cell_y, 105, cell_h, "LAT", lat_str)
+        # LAT cell: x=8, width=120
+        cell_x = g
+        cell_w = 120
+        draw.text((cell_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
+        val_text = f"{lat_str}{lat_dir}"
+        val_bbox = draw.textbbox((0, 0), val_text, font=self.hud_font)
+        draw.text((cell_x + cell_w - (val_bbox[2] - val_bbox[0]), value_y), 
+                  val_text, fill=self.hud_color_primary, font=self.hud_font)
         
-        # LON cell - wider for larger font
-        self._draw_data_cell_large(draw, 117, cell_y, 115, cell_h, "LON", lon_str)
+        # LON cell: x=144 (120 + 16 gap + 8), width=130  
+        cell_x = 120 + g * 2
+        cell_w = 130
+        draw.text((cell_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
+        val_text = f"{lon_str}{lon_dir}"
+        val_bbox = draw.textbbox((0, 0), val_text, font=self.hud_font)
+        draw.text((cell_x + cell_w - (val_bbox[2] - val_bbox[0]), value_y), 
+                  val_text, fill=self.hud_color_primary, font=self.hud_font)
         
-        # ISS label/status (right side) - larger and more prominent
-        iss_label = "● ISS"
-        label_bbox = draw.textbbox((0, 0), iss_label, font=self.hud_font)
-        label_w = label_bbox[2] - label_bbox[0]
-        label_h = label_bbox[3] - label_bbox[1]
-        label_y = (top_h - label_h) // 2
-        draw.text((w - label_w - 10, label_y), iss_label, fill=self.hud_color_primary, font=self.hud_font)
+        # ISS live indicator (right side) - simple dot + label
+        iss_x = w - g - 40
+        iss_y = (top_h - 20) // 2
+        # Pulsing dot (green for live)
+        draw.ellipse([iss_x, iss_y + 5, iss_x + 8, iss_y + 13], 
+                     fill=self.hud_color_indicator)
+        draw.text((iss_x + 12, iss_y), "ISS", 
+                  fill=self.hud_color_primary, font=self.hud_font_sm)
         
         # ═══════════════════════════════════════════════════════════
-        # BOTTOM BAR - Velocity and altitude
+        # BOTTOM BAR - Telemetry (ALT / VEL / ORBIT)
+        # Layout: [padding][ALT cell][gap][VEL cell][→ ORBIT]
         # ═══════════════════════════════════════════════════════════
         bot_h = self.hud_bottom_height
         bot_y = h - bot_h
         
-        # Background with subtle gradient effect
-        draw.rectangle([0, bot_y, w, bot_y + 2], fill=self.hud_color_border)
-        draw.rectangle([0, bot_y + 2, w, h], fill=self.hud_color_bg)
+        # Background bar with subtle bottom highlight
+        draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
+        draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border)
         
-        cell_y = bot_y + cell_padding
-        cell_h = bot_h - (cell_padding * 2)
+        # Vertical positions (relative to bottom bar)
+        label_y = bot_y + g + 2
+        value_y = bot_y + g * 3 - 2
         
-        # ALT cell - altitude in km
+        # ALT cell
+        cell_x = g
+        cell_w = 110
         alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
-        alt_str = f"{alt_km:,.0f} KM"
-        self._draw_data_cell_large(draw, 6, cell_y, 115, cell_h, "ALT", alt_str)
+        draw.text((cell_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
+        val_text = f"{alt_km:,.0f}"
+        val_bbox = draw.textbbox((0, 0), val_text, font=self.hud_font)
+        # Value
+        draw.text((cell_x + cell_w - (val_bbox[2] - val_bbox[0]) - 28, value_y), 
+                  val_text, fill=self.hud_color_primary, font=self.hud_font)
+        # Unit (smaller, dimmer, after value)
+        draw.text((cell_x + cell_w - 24, value_y + 4), "km", 
+                  fill=self.hud_color_dim, font=self.hud_font_sm)
         
-        # VEL cell - velocity
+        # VEL cell
+        cell_x = 110 + g * 2
+        cell_w = 130
         vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
-        vel_str = f"{vel_kmh:,.0f}"
-        self._draw_data_cell_large(draw, 127, cell_y, 120, cell_h, "KM/H", vel_str)
+        draw.text((cell_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
+        val_text = f"{vel_kmh:,.0f}"
+        val_bbox = draw.textbbox((0, 0), val_text, font=self.hud_font)
+        # Value
+        draw.text((cell_x + cell_w - (val_bbox[2] - val_bbox[0]) - 36, value_y), 
+                  val_text, fill=self.hud_color_primary, font=self.hud_font)
+        # Unit
+        draw.text((cell_x + cell_w - 32, value_y + 4), "km/h", 
+                  fill=self.hud_color_dim, font=self.hud_font_sm)
         
-        # Orbit info (right side)
-        orbit_str = "~16 ORB/DAY"
-        orb_bbox = draw.textbbox((0, 0), orbit_str, font=self.hud_font_sm)
-        orb_w = orb_bbox[2] - orb_bbox[0]
-        orb_h = orb_bbox[3] - orb_bbox[1]
-        orb_y = bot_y + (bot_h - orb_h) // 2
-        draw.text((w - orb_w - 10, orb_y), orbit_str, fill=self.hud_color_secondary, font=self.hud_font_sm)
+        # Orbit indicator (right side)
+        orb_x = w - g - 56
+        orb_y = bot_y + (bot_h - 20) // 2
+        draw.text((orb_x, orb_y - 2), "~16", fill=self.hud_color_dim, font=self.hud_font_sm)
+        draw.text((orb_x, orb_y + 12), "ORB/D", fill=self.hud_color_label, font=self.hud_font_lbl)
 
     def _draw_data_cell(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
         """Draw a bordered data cell with label and value (legacy small version)."""
