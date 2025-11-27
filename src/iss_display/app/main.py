@@ -28,6 +28,9 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
     logger.info("Starting ISS Tracker Display Loop...")
     
     running = True
+    last_api_fetch = 0
+    api_fetch_interval = 10  # Fetch ISS position every 10 seconds
+    cached_fix = None
     
     def signal_handler(sig, frame):
         nonlocal running
@@ -50,9 +53,13 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
             start_time = time.time()
             
             try:
-                # 1. Fetch Data
-                fix = iss_client.get_fix()
-                logger.debug(f"ISS Position: Lat {fix.latitude}, Lon {fix.longitude}")
+                # 1. Fetch Data (only every api_fetch_interval seconds)
+                if time.time() - last_api_fetch > api_fetch_interval or cached_fix is None:
+                    cached_fix = iss_client.get_fix()
+                    last_api_fetch = time.time()
+                    logger.debug(f"ISS Position: Lat {cached_fix.latitude}, Lon {cached_fix.longitude}")
+                
+                fix = cached_fix
                 
                 # 2. Update Display
                 driver.update(fix.latitude, fix.longitude)
@@ -62,13 +69,11 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
                 # Don't crash the loop on transient errors, just wait and retry
             
             # 3. Wait for next frame
-            # We want a reasonable refresh rate. The ISS moves fast (7.66 km/s).
-            # But generating the 3D wireframe takes time.
-            # Let's aim for updating every 5-10 seconds? Or faster if the Pi can handle it.
-            # Let's try 5 seconds for now.
+            # For smooth rotation animation, update frequently
+            # ISS position is cached and only fetched every few seconds
             
             elapsed = time.time() - start_time
-            sleep_time = max(1.0, 5.0 - elapsed)
+            sleep_time = max(0.1, 0.5 - elapsed)  # Target ~2 FPS for smooth rotation
             
             if running:
                 time.sleep(sleep_time)

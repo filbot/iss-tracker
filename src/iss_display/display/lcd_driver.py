@@ -102,7 +102,7 @@ class ST7796S:
         
         # Memory Access Control
         self.command(MADCTL)
-        self.data(0x48) # MY=0, MX=1, MV=0, ML=0, BGR=1, MH=0
+        self.data(0x40)  # MY=0, MX=1, MV=0, ML=0, BGR=0, MH=0 (RGB order)
         
         # Display Inversion On (some displays need INVOFF instead)
         self.command(INVON)
@@ -233,15 +233,25 @@ class LcdDisplay:
             logger.warning(f"Failed to initialize PlanetMapper Body: {e}")
             logger.info("This is likely due to missing SPICE kernels.")
             logger.info(f"Please check {self.kernel_dir} or run a setup script to download them.")
-            # Attempt to re-raise or handle gracefully?
-            # If we can't load the body, we can't render the wireframe.
-            # We could fallback to a simple circle?
             raise e
+        
+        # Rotation state for animation
+        self.rotation_offset = 0.0
 
     def update(self, lat: float, lon: float):
         """
-        Updates the display with the current ISS position.
+        Updates the display with the current ISS position and rotating Earth.
         """
+        # Update rotation offset for smooth animation (degrees per frame)
+        self.rotation_offset += 2.0  # Rotate 2 degrees per update
+        if self.rotation_offset >= 360:
+            self.rotation_offset -= 360
+        
+        # Apply rotation to the view longitude
+        view_lon = (lon + self.rotation_offset) % 360
+        if view_lon > 180:
+            view_lon -= 360
+        
         # Create Matplotlib Figure
         dpi = 100
         fig = plt.figure(figsize=(self.width/dpi, self.height/dpi), dpi=dpi)
@@ -249,26 +259,30 @@ class LcdDisplay:
         # Set background color
         fig.patch.set_facecolor(self.settings.ui_background_color)
         
-        ax = fig.add_axes([0, 0, 1, 1]) # Full screen axes
+        ax = fig.add_axes([0, 0, 1, 1])  # Full screen axes
         ax.set_facecolor(self.settings.ui_background_color)
-        ax.axis('off') # Hide axes
+        ax.axis('off')  # Hide axes
+        
+        # Update body time for accurate positioning
+        self.body = planetmapper.Body('earth', datetime.datetime.now(), observer='moon')
         
         try:
-            iss_ra, iss_dec = self.body.lonlat2radec(lon, lat)
+            # Use rotated view longitude for the Earth orientation
+            view_ra, view_dec = self.body.lonlat2radec(view_lon, 0)
         except Exception:
-            iss_ra, iss_dec = self.body.target_ra, self.body.target_dec
+            view_ra, view_dec = self.body.target_ra, self.body.target_dec
 
-        # Plot Wireframe
+        # Plot Wireframe Earth
         self.body.plot_wireframe_angular(
             ax,
-            origin_ra=iss_ra,
-            origin_dec=iss_dec,
+            origin_ra=view_ra,
+            origin_dec=view_dec,
             scale_factor=None,
             color=self.settings.ui_earth_color,
             grid_interval=30,
             formatting={
                 'grid': {'linestyle': '-', 'linewidth': 0.5, 'alpha': 0.5, 'color': self.settings.ui_earth_color},
-                'limb': {'linewidth': 1, 'color': self.settings.ui_earth_color},
+                'limb': {'linewidth': 2, 'color': self.settings.ui_earth_color},
                 'terminator': {'visible': False},
                 'prime_meridian': {'visible': False},
                 'equator': {'visible': False},
@@ -282,13 +296,21 @@ class LcdDisplay:
             
             try:
                 ras, decs = self.body.lonlat2radec(np.array(lons), np.array(lats))
-                ang_x, ang_y = self.body.radec2angular(ras, decs, origin_ra=iss_ra, origin_dec=iss_dec)
+                ang_x, ang_y = self.body.radec2angular(ras, decs, origin_ra=view_ra, origin_dec=view_dec)
                 ax.plot(ang_x, ang_y, color=self.settings.ui_earth_color, linewidth=1)
             except Exception:
                 continue
 
-        # Plot ISS Marker (Centered)
-        ax.plot(0, 0, 'o', color=self.settings.ui_iss_color, markersize=5)
+        # Plot ISS Marker at its actual position relative to the rotating view
+        try:
+            iss_ra, iss_dec = self.body.lonlat2radec(lon, lat)
+            iss_x, iss_y = self.body.radec2angular(iss_ra, iss_dec, origin_ra=view_ra, origin_dec=view_dec)
+            # Only plot if ISS is on visible side of Earth
+            ax.plot(iss_x, iss_y, 'o', color=self.settings.ui_iss_color, markersize=12, zorder=10)
+            # Add a glow effect
+            ax.plot(iss_x, iss_y, 'o', color=self.settings.ui_iss_color, markersize=18, alpha=0.3, zorder=9)
+        except Exception:
+            pass
         
         # Save to buffer
         canvas = agg.FigureCanvasAgg(fig)
