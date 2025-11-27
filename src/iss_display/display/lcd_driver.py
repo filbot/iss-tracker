@@ -288,9 +288,11 @@ class LcdDisplay:
 
     def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
         """Render a single globe frame at the given central longitude."""
-        # Create figure with appropriate size
+        # Create a square figure for the globe to keep it circular
+        # Use the smaller dimension to ensure globe fits
+        globe_size = min(self.width, self.height)
         dpi = 100
-        fig = plt.figure(figsize=(self.width/dpi, self.height/dpi), dpi=dpi, facecolor='black')
+        fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor='black')
         
         # Create Orthographic projection centered on the given longitude
         projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
@@ -325,14 +327,18 @@ class LcdDisplay:
                     bbox_inches='tight', pad_inches=0)
         buf.seek(0)
         
-        image = Image.open(buf).convert('RGB')
-        
-        # Resize to exact display dimensions if needed
-        if image.size != (self.width, self.height):
-            image = image.resize((self.width, self.height), Image.Resampling.LANCZOS)
-        
+        globe_img = Image.open(buf).convert('RGB')
         plt.close(fig)
-        return image
+        
+        # Create the final image at display size with black background
+        final_img = Image.new('RGB', (self.width, self.height), (0, 0, 0))
+        
+        # Center the globe on the display
+        x_offset = (self.width - globe_img.width) // 2
+        y_offset = (self.height - globe_img.height) // 2
+        final_img.paste(globe_img, (x_offset, y_offset))
+        
+        return final_img
 
     def update(self, lat: float, lon: float):
         """
