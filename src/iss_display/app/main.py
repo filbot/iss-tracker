@@ -42,6 +42,7 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
     
     # Show initial display immediately with default position
     logger.info("Displaying initial frame...")
+    frame_count = 0
     try:
         driver.update(0.0, 0.0)
         logger.info("Initial frame displayed")
@@ -51,17 +52,19 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
     try:
         while running:
             start_time = time.time()
+            frame_count += 1
             
             try:
                 # 1. Fetch Data (only every api_fetch_interval seconds)
                 if time.time() - last_api_fetch > api_fetch_interval or cached_fix is None:
                     cached_fix = iss_client.get_fix()
                     last_api_fetch = time.time()
-                    logger.debug(f"ISS Position: Lat {cached_fix.latitude}, Lon {cached_fix.longitude}")
+                    logger.info(f"ISS Position updated: Lat {cached_fix.latitude:.2f}, Lon {cached_fix.longitude:.2f}")
                 
                 fix = cached_fix
                 
                 # 2. Update Display
+                logger.info(f"Rendering frame {frame_count}...")
                 driver.update(fix.latitude, fix.longitude)
                 
             except Exception as e:

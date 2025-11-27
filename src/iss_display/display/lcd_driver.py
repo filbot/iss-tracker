@@ -102,7 +102,7 @@ class ST7796S:
         
         # Memory Access Control
         self.command(MADCTL)
-        self.data(0x40)  # MY=0, MX=1, MV=0, ML=0, BGR=0, MH=0 (RGB order)
+        self.data(0x48)  # MY=0, MX=1, MV=0, ML=0, BGR=1, MH=0 (BGR order)
         
         # Display Inversion On (some displays need INVOFF instead)
         self.command(INVON)
@@ -117,10 +117,6 @@ class ST7796S:
         
         # Turn on backlight
         GPIO.output(self.bl, GPIO.HIGH)
-        
-        # Fill screen with red to verify display is working
-        self._test_fill(0xF800)  # Red in RGB565
-        time.sleep(0.5)
     
     def _test_fill(self, color: int):
         """Fill the entire screen with a solid color (RGB565)."""
