@@ -8,11 +8,12 @@ import time
 import signal
 import sys
 import threading
-from typing import Sequence
+from dataclasses import dataclass
+from typing import Sequence, Optional
 
 from iss_display.config import Settings
 from iss_display.display.lcd_driver import LcdDisplay
-from iss_display.data.iss_client import ISSClient
+from iss_display.data.iss_client import ISSClient, ISSFix
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,16 @@ def configure_logging(level: str) -> None:
 
 
 class AsyncISSFetcher:
-    """Fetches ISS position in background thread to avoid blocking render loop."""
+    """Fetches ISS telemetry in background thread to avoid blocking render loop."""
     
-    def __init__(self, iss_client: ISSClient, interval: float = 10.0):
+    def __init__(self, iss_client: ISSClient, interval: float = 5.0):
         self.client = iss_client
         self.interval = interval
-        self.latitude = 0.0
-        self.longitude = 0.0
+        self._fix: ISSFix = ISSFix(
+            latitude=0.0, longitude=0.0, 
+            altitude_km=420.0, velocity_kmh=27600.0, 
+            timestamp=0.0
+        )
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
@@ -49,19 +53,18 @@ class AsyncISSFetcher:
         if self._thread:
             self._thread.join(timeout=2.0)
     
-    def get_position(self) -> tuple[float, float]:
-        """Get cached position (thread-safe, non-blocking)."""
+    def get_telemetry(self) -> ISSFix:
+        """Get cached telemetry (thread-safe, non-blocking)."""
         with self._lock:
-            return self.latitude, self.longitude
+            return self._fix
     
     def _do_fetch(self):
         """Perform a single fetch."""
         try:
             fix = self.client.get_fix()
             with self._lock:
-                self.latitude = fix.latitude
-                self.longitude = fix.longitude
-            logger.debug(f"ISS Position: Lat {fix.latitude:.2f}, Lon {fix.longitude:.2f}")
+                self._fix = fix
+            logger.debug(f"ISS: Lat {fix.latitude:.2f}, Lon {fix.longitude:.2f}, Alt {fix.altitude_km}")
         except Exception as e:
             logger.warning(f"API fetch failed: {e}")
     
@@ -77,8 +80,8 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
     iss_client = ISSClient(settings)
     driver = LcdDisplay(settings)
     
-    # Start async ISS fetcher
-    fetcher = AsyncISSFetcher(iss_client, interval=10.0)
+    # Start async ISS fetcher (5 second interval for more responsive telemetry)
+    fetcher = AsyncISSFetcher(iss_client, interval=5.0)
     fetcher.start()
     
     logger.info("Starting ISS Tracker Display Loop...")
@@ -98,8 +101,8 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        lat, lon = fetcher.get_position()
-        logger.info(f"Initial ISS Position: Lat {lat:.2f}, Lon {lon:.2f}")
+        telemetry = fetcher.get_telemetry()
+        logger.info(f"Initial ISS Position: Lat {telemetry.latitude:.2f}, Lon {telemetry.longitude:.2f}")
         
         # Target max FPS - actual will be limited by SPI transfer time
         target_fps = 30
@@ -109,11 +112,11 @@ def run_loop(settings: Settings, preview_only: bool) -> None:
             frame_start = time.time()
             
             try:
-                # Get cached position (non-blocking)
-                lat, lon = fetcher.get_position()
+                # Get cached telemetry (non-blocking)
+                telemetry = fetcher.get_telemetry()
                 
-                # Update Display
-                driver.update(lat, lon)
+                # Update Display with full telemetry
+                driver.update_with_telemetry(telemetry)
                 
             except Exception as e:
                 logger.error(f"Error in update loop: {e}")

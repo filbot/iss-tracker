@@ -1,14 +1,18 @@
 import logging
 import time
+import math
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 import io
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
+
+if TYPE_CHECKING:
+    from iss_display.data.iss_client import ISSFix
 
 try:
     import cartopy.crs as ccrs
@@ -256,6 +260,53 @@ class LcdDisplay:
         
         # Pre-compute RGB565 bytes for all frames
         self._precompute_rgb565()
+        
+        # Initialize HUD renderer
+        self._init_hud()
+
+    def _init_hud(self):
+        """Initialize HUD fonts and colors."""
+        # Try to load a monospace font, fall back to default
+        self.hud_font_size = 14
+        self.hud_font_small = 11
+        
+        # Try system monospace fonts
+        mono_fonts = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+            "/System/Library/Fonts/Menlo.ttc",  # macOS
+            "/System/Library/Fonts/Monaco.ttf",  # macOS
+        ]
+        
+        self.hud_font = None
+        self.hud_font_sm = None
+        
+        for font_path in mono_fonts:
+            try:
+                self.hud_font = ImageFont.truetype(font_path, self.hud_font_size)
+                self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_small)
+                logger.info(f"Loaded HUD font: {font_path}")
+                break
+            except (OSError, IOError):
+                continue
+        
+        if self.hud_font is None:
+            # Fall back to default bitmap font
+            self.hud_font = ImageFont.load_default()
+            self.hud_font_sm = self.hud_font
+            logger.warning("Using default bitmap font for HUD")
+        
+        # HUD colors (NASA/military style - green/amber on black)
+        self.hud_color_primary = (0, 255, 136)      # Bright green
+        self.hud_color_secondary = (0, 180, 100)    # Dimmer green
+        self.hud_color_label = (0, 140, 80)         # Label green
+        self.hud_color_border = (0, 100, 60)        # Border green
+        self.hud_color_bg = (0, 20, 10)             # Dark background
+        
+        # HUD bar heights
+        self.hud_top_height = 28
+        self.hud_bottom_height = 28
 
     def _image_to_rgb565_bytes(self, image: Image.Image) -> bytes:
         """Convert PIL Image to RGB565 bytes for direct display."""
@@ -387,9 +438,26 @@ class LcdDisplay:
         Updates the display with the current ISS position on rotating Earth.
         Uses pre-rendered frames for smooth animation.
         """
+        # Create a dummy telemetry object for backward compatibility
+        from iss_display.data.iss_client import ISSFix
+        telemetry = ISSFix(
+            latitude=lat, longitude=lon,
+            altitude_km=420.0, velocity_kmh=27600.0,
+            timestamp=0.0
+        )
+        self.update_with_telemetry(telemetry)
+
+    def update_with_telemetry(self, telemetry: "ISSFix"):
+        """
+        Updates the display with full ISS telemetry data.
+        Renders globe animation with HUD overlay showing telemetry.
+        """
         if not self.frames_generated:
             logger.warning("Frames not yet generated")
             return
+        
+        lat = telemetry.latitude
+        lon = telemetry.longitude
         
         # Calculate the central longitude of this frame
         central_lon = (self.current_frame * (360 / self.num_frames)) - 180
@@ -397,17 +465,146 @@ class LcdDisplay:
         # Check if ISS is visible on this frame
         iss_visible = self._is_iss_visible(lat, lon, central_lon)
         
-        if iss_visible and self.driver:
-            # ISS is visible - need to draw marker
-            # Use a shared mutable image to avoid copy overhead
-            base_frame = self.frame_cache[self.current_frame]
-            self._add_iss_marker_fast(base_frame, lat, lon, central_lon)
-        elif self.driver:
-            # ISS not visible - use pre-computed bytes (fastest path)
-            self.driver.display_raw(self.frame_bytes_cache[self.current_frame])
+        # Get base frame and create composite with HUD
+        base_frame = self.frame_cache[self.current_frame].copy()
+        
+        # Draw ISS marker if visible
+        if iss_visible:
+            self._add_iss_marker_to_image(base_frame, lat, lon, central_lon)
+        
+        # Draw HUD overlay
+        self._draw_hud(base_frame, telemetry)
+        
+        # Convert and send to display
+        if self.driver:
+            pixel_bytes = self._image_to_rgb565_bytes(base_frame)
+            self.driver.display_raw(pixel_bytes)
+        
+        self.image = base_frame
         
         # Advance to next frame
         self.current_frame = (self.current_frame + 1) % self.num_frames
+
+    def _draw_hud(self, image: Image.Image, telemetry: "ISSFix"):
+        """Draw military-style HUD overlay with telemetry data."""
+        draw = ImageDraw.Draw(image)
+        w, h = image.size
+        
+        # ═══════════════════════════════════════════════════════════
+        # TOP BAR - Position data
+        # ═══════════════════════════════════════════════════════════
+        top_h = self.hud_top_height
+        
+        # Semi-transparent background
+        draw.rectangle([0, 0, w, top_h], fill=self.hud_color_bg)
+        draw.line([0, top_h, w, top_h], fill=self.hud_color_border, width=1)
+        
+        # Format latitude with N/S
+        lat = telemetry.latitude
+        lat_dir = "N" if lat >= 0 else "S"
+        lat_str = f"{abs(lat):06.2f}°{lat_dir}"
+        
+        # Format longitude with E/W
+        lon = telemetry.longitude
+        lon_dir = "E" if lon >= 0 else "W"
+        lon_str = f"{abs(lon):07.2f}°{lon_dir}"
+        
+        # Draw bordered data cells
+        cell_y = 4
+        cell_h = top_h - 8
+        
+        # LAT cell
+        self._draw_data_cell(draw, 4, cell_y, 85, cell_h, "LAT", lat_str)
+        
+        # LON cell  
+        self._draw_data_cell(draw, 93, cell_y, 95, cell_h, "LON", lon_str)
+        
+        # ISS label/status (right side)
+        iss_label = "◉ ISS ZARYA"
+        label_bbox = draw.textbbox((0, 0), iss_label, font=self.hud_font)
+        label_w = label_bbox[2] - label_bbox[0]
+        draw.text((w - label_w - 8, 7), iss_label, fill=self.hud_color_primary, font=self.hud_font)
+        
+        # ═══════════════════════════════════════════════════════════
+        # BOTTOM BAR - Velocity and altitude
+        # ═══════════════════════════════════════════════════════════
+        bot_h = self.hud_bottom_height
+        bot_y = h - bot_h
+        
+        # Semi-transparent background
+        draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
+        draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border, width=1)
+        
+        cell_y = bot_y + 4
+        cell_h = bot_h - 8
+        
+        # ALT cell
+        alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
+        alt_str = f"{alt_km:,.0f} KM"
+        self._draw_data_cell(draw, 4, cell_y, 95, cell_h, "ALT", alt_str)
+        
+        # VEL cell
+        vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
+        vel_str = f"{vel_kmh:,.0f} KM/H"
+        self._draw_data_cell(draw, 103, cell_y, 115, cell_h, "VEL", vel_str)
+        
+        # Orbit indicator (right side)
+        orbit_str = "ORBIT 16/DAY"
+        orb_bbox = draw.textbbox((0, 0), orbit_str, font=self.hud_font_sm)
+        orb_w = orb_bbox[2] - orb_bbox[0]
+        draw.text((w - orb_w - 8, bot_y + 8), orbit_str, fill=self.hud_color_secondary, font=self.hud_font_sm)
+
+    def _draw_data_cell(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
+        """Draw a bordered data cell with label and value."""
+        # Border
+        draw.rectangle([x, y, x + w, y + h], outline=self.hud_color_border)
+        
+        # Label (small, dimmer)
+        draw.text((x + 3, y + 1), label, fill=self.hud_color_label, font=self.hud_font_sm)
+        
+        # Value (right-aligned, brighter)
+        val_bbox = draw.textbbox((0, 0), value, font=self.hud_font_sm)
+        val_w = val_bbox[2] - val_bbox[0]
+        draw.text((x + w - val_w - 3, y + 1), value, fill=self.hud_color_primary, font=self.hud_font_sm)
+
+    def _add_iss_marker_to_image(self, image: Image.Image, lat: float, lon: float, central_lon: float):
+        """Draw ISS marker on a PIL Image (used when HUD is drawn)."""
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        central_lon_rad = math.radians(central_lon)
+        
+        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        if cos_c < 0:
+            return
+        
+        x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
+        y_surface = math.sin(lat_rad)
+        
+        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
+        x_iss = x_surface * iss_altitude_factor
+        y_iss = y_surface * iss_altitude_factor
+        
+        cx = getattr(self, 'globe_center_x', self.width // 2)
+        cy = getattr(self, 'globe_center_y', self.height // 2)
+        globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
+        
+        px = int(cx + x_iss * globe_radius)
+        py = int(cy - y_iss * globe_radius)
+        
+        if 0 <= px < self.width and 0 <= py < self.height:
+            draw = ImageDraw.Draw(image)
+            
+            # Glow effect
+            for i in range(3):
+                r = 7 - i * 2
+                glow_color = (255, int(50 + i * 40), int(50 + i * 40))
+                draw.ellipse([px-r, py-r, px+r, py+r], fill=glow_color)
+            
+            # Red core
+            draw.ellipse([px-3, py-3, px+3, py+3], fill=(255, 0, 0))
+            
+            # White center
+            draw.ellipse([px-1, py-1, px+1, py+1], fill=(255, 255, 255))
 
     def _is_iss_visible(self, lat: float, lon: float, central_lon: float) -> bool:
         """Check if ISS is visible from current view angle."""
