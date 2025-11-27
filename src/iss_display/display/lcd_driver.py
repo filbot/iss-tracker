@@ -223,18 +223,18 @@ class ST7796S:
             black_screen = bytes([0x00, 0x00] * (self.width * self.height))
             for _ in range(3):  # Multiple passes to fully discharge
                 self.set_window(0, 0, self.width - 1, self.height - 1)
-                self._write_command(RAMWR)
+                self.command(RAMWR)
                 GPIO.output(self.dc, GPIO.HIGH)
                 for i in range(0, len(black_screen), 32768):
                     self.spi.writebytes2(black_screen[i:i+32768])
                 time.sleep(0.05)
             
             # 3. Turn off the display output
-            self._write_command(DISPOFF)
+            self.command(DISPOFF)
             time.sleep(0.05)
             
             # 4. Enter sleep mode (minimum power, internal oscillator off)
-            self._write_command(SLPIN)
+            self.command(SLPIN)
             time.sleep(0.12)  # 120ms required per datasheet
             
             # 5. Hardware reset - hold low to fully disable controller
