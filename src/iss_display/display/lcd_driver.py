@@ -1,14 +1,21 @@
 import logging
 import time
 from pathlib import Path
-from typing import Optional, List, Tuple
-import datetime
+from typing import Optional, List
+import io
 
 from PIL import Image
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
-import matplotlib.backends.backend_agg as agg
-import planetmapper
 import numpy as np
+
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    CARTOPY_AVAILABLE = True
+except ImportError:
+    CARTOPY_AVAILABLE = False
 
 try:
     import spidev
@@ -18,7 +25,6 @@ except ImportError:
     HARDWARE_AVAILABLE = False
 
 from iss_display.config import Settings
-from iss_display.data.world_110m import LAND_MASSES
 
 logger = logging.getLogger(__name__)
 
@@ -210,19 +216,9 @@ class LcdDisplay:
             else:
                 logger.info("Running in preview-only mode")
         
-        # Configure PlanetMapper kernel path
-        self.kernel_dir = self.settings.preview_dir.parent / "spice_kernels"
-        self.kernel_dir.mkdir(parents=True, exist_ok=True)
-        planetmapper.set_kernel_path(str(self.kernel_dir))
-        
-        # Initialize PlanetMapper Body
-        try:
-            self.body = planetmapper.Body('earth', datetime.datetime.now(), observer='moon')
-        except Exception as e:
-            logger.warning(f"Failed to initialize PlanetMapper Body: {e}")
-            logger.info("This is likely due to missing SPICE kernels.")
-            logger.info(f"Please check {self.kernel_dir} or run a setup script to download them.")
-            raise e
+        if not CARTOPY_AVAILABLE:
+            logger.error("Cartopy is not installed. Please run: pip install cartopy")
+            raise ImportError("Cartopy is required for rendering the globe")
         
         # Pre-rendered frame cache
         self.frame_cache: List[Image.Image] = []
@@ -234,12 +230,15 @@ class LcdDisplay:
         self.cache_dir = self.settings.preview_dir.parent / "frame_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
+        # Current image
+        self.image: Optional[Image.Image] = None
+        
         # Try to load cached frames or generate them
         self._load_or_generate_frames()
 
     def _load_or_generate_frames(self):
         """Load pre-rendered frames from cache or generate them."""
-        cache_file = self.cache_dir / "frames.npz"
+        cache_file = self.cache_dir / "cartopy_frames.npz"
         
         if cache_file.exists():
             logger.info("Loading cached Earth frames...")
@@ -257,24 +256,24 @@ class LcdDisplay:
         self._generate_frames()
     
     def _generate_frames(self):
-        """Pre-render all Earth rotation frames."""
-        logger.info(f"Generating {self.num_frames} Earth frames (this may take a minute)...")
+        """Pre-render all Earth rotation frames using Cartopy."""
+        logger.info(f"Generating {self.num_frames} Earth frames with Cartopy...")
         
         self.frame_cache = []
         degrees_per_frame = 360 / self.num_frames
         
         for i in range(self.num_frames):
-            rotation = i * degrees_per_frame
-            logger.info(f"  Generating frame {i+1}/{self.num_frames} ({rotation:.0f}°)...")
+            central_lon = (i * degrees_per_frame) - 180  # Range: -180 to 180
+            logger.info(f"  Generating frame {i+1}/{self.num_frames} (lon={central_lon:.0f}°)...")
             
-            frame = self._render_earth_frame(rotation)
+            frame = self._render_globe_frame(central_lon)
             self.frame_cache.append(frame)
         
         # Save to cache
         logger.info("Saving frames to cache...")
         try:
             frame_dict = {f'frame_{i}': np.array(frame) for i, frame in enumerate(self.frame_cache)}
-            np.savez_compressed(self.cache_dir / "frames.npz", **frame_dict)
+            np.savez_compressed(self.cache_dir / "cartopy_frames.npz", **frame_dict)
             logger.info("Frames cached successfully")
         except Exception as e:
             logger.warning(f"Failed to save cache: {e}")
@@ -282,68 +281,51 @@ class LcdDisplay:
         self.frames_generated = True
         logger.info("Frame generation complete!")
 
-    def _render_earth_frame(self, rotation_degrees: float) -> Image.Image:
-        """Render a single Earth frame at the given rotation."""
+    def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
+        """Render a single globe frame at the given central longitude."""
+        # Create figure with appropriate size
         dpi = 100
-        fig = plt.figure(figsize=(self.width/dpi, self.height/dpi), dpi=dpi)
-        fig.patch.set_facecolor(self.settings.ui_background_color)
+        fig = plt.figure(figsize=(self.width/dpi, self.height/dpi), dpi=dpi, facecolor='black')
         
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_facecolor(self.settings.ui_background_color)
-        ax.axis('off')
+        # Create Orthographic projection centered on the given longitude
+        projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
         
-        # Calculate view based on rotation
-        view_lon = rotation_degrees
-        if view_lon > 180:
-            view_lon -= 360
+        ax = fig.add_subplot(1, 1, 1, projection=projection)
+        ax.set_facecolor('black')
         
-        try:
-            view_ra, view_dec = self.body.lonlat2radec(view_lon, 0)
-        except Exception:
-            view_ra, view_dec = self.body.target_ra, self.body.target_dec
-
-        # Plot Wireframe Earth
-        self.body.plot_wireframe_angular(
-            ax,
-            origin_ra=view_ra,
-            origin_dec=view_dec,
-            scale_factor=None,
-            color=self.settings.ui_earth_color,
-            grid_interval=30,
-            formatting={
-                'grid': {'linestyle': '-', 'linewidth': 0.5, 'alpha': 0.5, 'color': self.settings.ui_earth_color},
-                'limb': {'linewidth': 2, 'color': self.settings.ui_earth_color},
-                'terminator': {'visible': False},
-                'prime_meridian': {'visible': False},
-                'equator': {'visible': False},
-            }
-        )
+        # Set the global extent
+        ax.set_global()
         
-        # Plot Land Masses
-        for poly in LAND_MASSES:
-            lats = [p[0] for p in poly]
-            lons = [p[1] for p in poly]
-            
-            try:
-                ras, decs = self.body.lonlat2radec(np.array(lons), np.array(lats))
-                ang_x, ang_y = self.body.radec2angular(ras, decs, origin_ra=view_ra, origin_dec=view_dec)
-                ax.plot(ang_x, ang_y, color=self.settings.ui_earth_color, linewidth=1)
-            except Exception:
-                continue
+        # Add ocean (dark blue background for the globe)
+        ax.add_feature(cfeature.OCEAN, facecolor='#001133', edgecolor='none', zorder=0)
         
-        # Store view info for ISS overlay
-        ax._view_ra = view_ra
-        ax._view_dec = view_dec
-        ax._rotation = rotation_degrees
+        # Add land masses (white/light color)
+        ax.add_feature(cfeature.LAND, facecolor='#FFFFFF', edgecolor='#CCCCCC', linewidth=0.5, zorder=1)
         
-        canvas = agg.FigureCanvasAgg(fig)
-        canvas.draw()
+        # Add coastlines for better definition
+        ax.add_feature(cfeature.COASTLINE, edgecolor='#888888', linewidth=0.5, zorder=2)
         
-        rgba_buffer = canvas.buffer_rgba()
-        size = canvas.get_width_height()
+        # Add gridlines
+        ax.gridlines(color='#444444', linewidth=0.3, alpha=0.5, linestyle='-')
         
-        image = Image.frombuffer("RGBA", size, rgba_buffer)
-        image = image.convert("RGB")
+        # Remove axis frame/border
+        ax.outline_patch.set_visible(False)
+        ax.background_patch.set_visible(True)
+        
+        # Remove all margins
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        
+        # Render to image
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, facecolor='black', edgecolor='none',
+                    bbox_inches='tight', pad_inches=0)
+        buf.seek(0)
+        
+        image = Image.open(buf).convert('RGB')
+        
+        # Resize to exact display dimensions if needed
+        if image.size != (self.width, self.height):
+            image = image.resize((self.width, self.height), Image.Resampling.LANCZOS)
         
         plt.close(fig)
         return image
@@ -360,11 +342,11 @@ class LcdDisplay:
         # Get current frame
         base_frame = self.frame_cache[self.current_frame].copy()
         
-        # Calculate ISS position on this frame
-        rotation = self.current_frame * (360 / self.num_frames)
+        # Calculate the central longitude of this frame
+        central_lon = (self.current_frame * (360 / self.num_frames)) - 180
         
         # Add ISS marker overlay
-        self._add_iss_marker(base_frame, lat, lon, rotation)
+        self._add_iss_marker(base_frame, lat, lon, central_lon)
         
         self.image = base_frame
         
@@ -375,62 +357,79 @@ class LcdDisplay:
         if self.driver:
             self.driver.display(self.image)
         
-        # Save preview (only occasionally to reduce disk I/O)
-        if self.settings.preview_dir and self.current_frame % 10 == 0:
+        # Save preview
+        if self.settings.preview_dir:
             preview_path = self.settings.preview_dir / "lcd_preview.png"
             self.image.save(preview_path)
 
-    def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, rotation: float):
-        """Draw ISS marker on the frame at the correct position."""
+    def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, central_lon: float):
+        """Draw ISS marker on the frame at the correct position using Cartopy projection math."""
         from PIL import ImageDraw
         
-        # Calculate where ISS appears on this rotation
-        view_lon = rotation
-        if view_lon > 180:
-            view_lon -= 360
+        # Calculate if ISS is visible from this view angle
+        # The ISS is visible if it's within ~90 degrees of the central longitude
+        lon_diff = abs(lon - central_lon)
+        if lon_diff > 180:
+            lon_diff = 360 - lon_diff
         
-        try:
-            view_ra, view_dec = self.body.lonlat2radec(view_lon, 0)
-            iss_ra, iss_dec = self.body.lonlat2radec(lon, lat)
+        # Also check latitude visibility (within ~90 degrees from equator for our 0° central_lat view)
+        if lon_diff > 90:
+            # ISS is on the far side of the globe
+            return
+        
+        # Project ISS position to screen coordinates using orthographic projection math
+        # Orthographic projection formulas:
+        # x = R * cos(lat) * sin(lon - central_lon)
+        # y = R * cos(central_lat) * sin(lat) - sin(central_lat) * cos(lat) * cos(lon - central_lon)
+        # For central_lat = 0:
+        # x = R * cos(lat) * sin(lon - central_lon)
+        # y = R * sin(lat)
+        
+        import math
+        
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        central_lon_rad = math.radians(central_lon)
+        central_lat_rad = 0  # We're viewing from equator
+        
+        # Orthographic projection
+        x = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
+        y = math.cos(central_lat_rad) * math.sin(lat_rad) - math.sin(central_lat_rad) * math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        
+        # Check if point is on visible hemisphere
+        # cos(c) = sin(central_lat) * sin(lat) + cos(central_lat) * cos(lat) * cos(lon - central_lon)
+        cos_c = math.sin(central_lat_rad) * math.sin(lat_rad) + math.cos(central_lat_rad) * math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        
+        if cos_c < 0:
+            # Point is on far side
+            return
+        
+        # Convert to pixel coordinates
+        # x and y are in range [-1, 1] representing the globe
+        # The globe typically fills about 80% of the smaller dimension
+        globe_radius = min(self.width, self.height) * 0.4
+        cx, cy = self.width // 2, self.height // 2
+        
+        px = int(cx + x * globe_radius)
+        py = int(cy - y * globe_radius)  # Flip Y for image coordinates
+        
+        # Check bounds
+        if 0 <= px < self.width and 0 <= py < self.height:
+            draw = ImageDraw.Draw(image)
             
-            # Get angular position
-            iss_x, iss_y = self.body.radec2angular(iss_ra, iss_dec, origin_ra=view_ra, origin_dec=view_dec)
+            # Draw glow effect (red)
+            for i in range(3):
+                r = 10 - i * 3
+                color = (255, 50 + i * 30, 50 + i * 30)
+                draw.ellipse([px-r, py-r, px+r, py+r], fill=color)
             
-            # Convert angular position to pixel coordinates
-            # The angular coordinates are typically in degrees, centered at 0,0
-            # We need to map them to image pixels
-            cx, cy = self.width // 2, self.height // 2
+            # Draw solid red marker
+            r_marker = 5
+            draw.ellipse([px-r_marker, py-r_marker, px+r_marker, py+r_marker], fill=(255, 0, 0))
             
-            # Scale factor - approximate based on typical angular size of Earth
-            # Earth appears about 2 degrees across from Moon distance
-            scale = min(self.width, self.height) / 4  # Adjust this based on actual view
-            
-            px = int(cx + iss_x * scale)
-            py = int(cy - iss_y * scale)  # Flip Y for image coordinates
-            
-            # Check if ISS is on visible side (roughly)
-            # If angular distance from center is too large, ISS is on far side
-            angular_dist = np.sqrt(iss_x**2 + iss_y**2)
-            if angular_dist > 1.2:  # Earth radius in angular units
-                return  # ISS is on far side, don't draw
-            
-            # Check bounds
-            if 0 <= px < self.width and 0 <= py < self.height:
-                draw = ImageDraw.Draw(image)
-                
-                # Draw glow
-                r_glow = 12
-                for i in range(3):
-                    alpha = 80 - i * 25
-                    r = r_glow - i * 3
-                    draw.ellipse([px-r, py-r, px+r, py+r], fill=(255, 50, 50))
-                
-                # Draw solid marker
-                r_marker = 6
-                draw.ellipse([px-r_marker, py-r_marker, px+r_marker, py+r_marker], fill=(255, 0, 0))
-                
-        except Exception as e:
-            logger.debug(f"Could not plot ISS marker: {e}")
+            # Draw white center dot
+            r_center = 2
+            draw.ellipse([px-r_center, py-r_center, px+r_center, py+r_center], fill=(255, 255, 255))
 
     def close(self):
         if self.driver:
