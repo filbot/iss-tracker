@@ -212,8 +212,33 @@ class ST7796S:
             self.spi.writebytes2(pixel_bytes[i:i+chunk_size])
 
     def close(self):
-        GPIO.cleanup()
-        self.spi.close()
+        """Properly shut down the display - turn off backlight and display."""
+        try:
+            # 1. Turn off backlight first
+            GPIO.output(self.bl, GPIO.LOW)
+            
+            # 2. Send display off command
+            self._write_command(DISPOFF)
+            time.sleep(0.02)
+            
+            # 3. Clear the display to black (prevents ghost image)
+            black_screen = bytes([0x00, 0x00] * (self.width * self.height))
+            self._write_command(RAMWR)
+            GPIO.output(self.dc, GPIO.HIGH)
+            for i in range(0, len(black_screen), 32768):
+                self.spi.writebytes2(black_screen[i:i+32768])
+            
+            # 4. Set reset pin low to fully disable display
+            GPIO.output(self.rst, GPIO.LOW)
+            time.sleep(0.01)
+            
+            logger.info("Display turned off and cleared")
+        except Exception as e:
+            logger.warning(f"Error during display shutdown: {e}")
+        finally:
+            # 5. Clean up resources
+            self.spi.close()
+            GPIO.cleanup()
 
 
 class LcdDisplay:
