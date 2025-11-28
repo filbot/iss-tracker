@@ -350,11 +350,11 @@ class LcdDisplay:
         # COLOR PALETTE (NASA/military amber theme with proper contrast ratios)
         # Follows WCAG-like contrast: labels at ~40% luminance, values at 100%
         # ═══════════════════════════════════════════════════════════════════════
-        self.hud_color_primary = (255, 210, 0)      # Bright amber - values
+        self.hud_color_primary = (234, 203, 19)      # Bright amber - values
         self.hud_color_label = (160, 135, 30)       # Muted amber - labels (~60% of primary)
         self.hud_color_dim = (100, 85, 20)          # Dim amber - units, borders
         self.hud_color_border = (60, 50, 15)        # Subtle border
-        self.hud_color_bg = (12, 12, 24)            # Deep blue-black
+        self.hud_color_bg = (0, 0, 0)            # Deep blue-black
         self.hud_color_indicator = (80, 200, 100)   # Green for live indicator
         
         # ═══════════════════════════════════════════════════════════════════════
@@ -597,8 +597,8 @@ class LcdDisplay:
         bot_y = h - bot_h
         
         # Background bar
-        draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
-        draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border)
+        # draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
+        # draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border)
         
         alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
         vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
