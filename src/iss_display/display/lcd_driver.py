@@ -438,8 +438,8 @@ class LcdDisplay:
         self.iss_orbit_scale = 1.10  # ISS orbits at ~10% above Earth surface (exaggerated for visibility)
         
         # Deep dark blue background color
-        bg_color = '#050510'  # Almost black with slight blue tint
-        bg_rgb = (5, 5, 16)
+        bg_color = '#000000'  # Almost black with slight blue tint
+        bg_rgb = (0, 0, 0)
         
         globe_size = int(min(self.width, self.height) * self.globe_scale)
         dpi = 100
@@ -563,7 +563,7 @@ class LcdDisplay:
         
         # Background bar
         draw.rectangle([0, 0, w, top_h], fill=self.hud_color_bg)
-        draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
+        # draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
         
         # Format coordinates
         lat = telemetry.latitude
@@ -597,7 +597,7 @@ class LcdDisplay:
         bot_y = h - bot_h
         
         # Background bar
-        # draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
+        draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
         # draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border)
         
         alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
