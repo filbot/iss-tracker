@@ -551,19 +551,13 @@ class LcdDisplay:
     def _draw_hud(self, image: Image.Image, telemetry: "ISSFix"):
         """Draw clean, well-structured HUD overlay with telemetry data.
         
-        Layout calculated for 320px width display:
-        - 8px padding on each side = 304px usable
-        - 8px gaps between elements
-        - All positions explicitly calculated to prevent overlap
+        Refactored to show only values, centered.
         """
         draw = ImageDraw.Draw(image)
         w, h = image.size  # 320 x 480
-        g = self.hud_grid  # 8px grid unit
         
         # ═══════════════════════════════════════════════════════════
-        # TOP BAR - Position (LAT / LON / ISS)
-        # Width budget: 320 - 16 padding = 304px usable
-        # Layout: LAT(95) + gap(8) + LON(105) + gap(8) + ISS(45) = 261px
+        # TOP BAR - Position (LAT / LON) - Values Only
         # ═══════════════════════════════════════════════════════════
         top_h = self.hud_top_height
         
@@ -577,44 +571,27 @@ class LcdDisplay:
         lon = telemetry.longitude
         lon_dir = "E" if lon >= 0 else "W"
         
-        # Vertical positions (stacked: label on top, value below)
-        label_y = g          # 8px from top
-        value_y = g * 3      # 24px from top
-        
-        # LAT cell: x=8, width=95
-        lat_x = g
-        lat_w = 95
-        draw.text((lat_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
         lat_val = f"{abs(lat):05.2f}°{lat_dir}"
-        lat_bbox = draw.textbbox((0, 0), lat_val, font=self.hud_font)
-        draw.text((lat_x + lat_w - (lat_bbox[2] - lat_bbox[0]), value_y), 
-                  lat_val, fill=self.hud_color_primary, font=self.hud_font)
-        
-        # LON cell: x=111 (95 + 8 gap + 8 padding), width=105
-        lon_x = lat_x + lat_w + g
-        lon_w = 105
-        draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
         lon_val = f"{abs(lon):06.2f}°{lon_dir}"
-        lon_bbox = draw.textbbox((0, 0), lon_val, font=self.hud_font)
-        draw.text((lon_x + lon_w - (lon_bbox[2] - lon_bbox[0]), value_y), 
-                  lon_val, fill=self.hud_color_primary, font=self.hud_font)
         
-        # ISS indicator: right-aligned, 45px wide
-        iss_w = 45
-        iss_x = w - g - iss_w  # 320 - 8 - 45 = 267
-        iss_center_y = top_h // 2
-        # Green dot
-        dot_r = 4
-        draw.ellipse([iss_x, iss_center_y - dot_r, iss_x + dot_r * 2, iss_center_y + dot_r], 
-                     fill=self.hud_color_indicator)
-        # "ISS" text
-        draw.text((iss_x + dot_r * 2 + 4, iss_center_y - 8), "ISS", 
-                  fill=self.hud_color_primary, font=self.hud_font_sm)
+        # Calculate positions
+        # Left half (0 to w/2) for LAT
+        lat_bbox = draw.textbbox((0, 0), lat_val, font=self.hud_font)
+        lat_w = lat_bbox[2] - lat_bbox[0]
+        lat_x = (w // 2 - lat_w) // 2
+        lat_y = (top_h - (lat_bbox[1] + lat_bbox[3])) // 2
+        
+        # Right half (w/2 to w) for LON
+        lon_bbox = draw.textbbox((0, 0), lon_val, font=self.hud_font)
+        lon_w = lon_bbox[2] - lon_bbox[0]
+        lon_x = w // 2 + (w // 2 - lon_w) // 2
+        lon_y = (top_h - (lon_bbox[1] + lon_bbox[3])) // 2
+        
+        draw.text((lat_x, lat_y), lat_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((lon_x, lon_y), lon_val, fill=self.hud_color_primary, font=self.hud_font)
         
         # ═══════════════════════════════════════════════════════════
-        # BOTTOM BAR - Telemetry (ALT / VEL / ORBIT)
-        # Width budget: 320 - 16 padding = 304px usable  
-        # Layout: ALT(85) + gap(8) + VEL(115) + gap(8) + ORB(50) = 266px
+        # BOTTOM BAR - Telemetry (ALT / VEL) - Values Only
         # ═══════════════════════════════════════════════════════════
         bot_h = self.hud_bottom_height
         bot_y = h - bot_h
@@ -623,40 +600,26 @@ class LcdDisplay:
         draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
         draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border)
         
-        # Vertical positions (relative to bottom bar)
-        label_y = bot_y + g
-        value_y = bot_y + g * 3
-        
-        # ALT cell: x=8, width=85
-        alt_x = g
-        alt_w = 85
         alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
-        draw.text((alt_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        alt_val = f"{alt_km:,.0f}"
-        alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
-        # Value + unit inline
-        val_x = alt_x + alt_w - (alt_bbox[2] - alt_bbox[0]) - 22  # leave room for "km"
-        draw.text((val_x, value_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
-        draw.text((alt_x + alt_w - 18, value_y + 4), "km", fill=self.hud_color_dim, font=self.hud_font_sm)
-        
-        # VEL cell: x=101 (85 + 8 gap + 8), width=115
-        vel_x = alt_x + alt_w + g
-        vel_w = 115
         vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
-        draw.text((vel_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
-        vel_val = f"{vel_kmh:,.0f}"
-        vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
-        # Value + unit inline
-        val_x = vel_x + vel_w - (vel_bbox[2] - vel_bbox[0]) - 32  # leave room for "km/h"
-        draw.text((val_x, value_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
-        draw.text((vel_x + vel_w - 28, value_y + 4), "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
         
-        # ORBIT indicator: right-aligned, 50px wide
-        orb_w = 50
-        orb_x = w - g - orb_w  # 320 - 8 - 50 = 262
-        orb_center_y = bot_y + bot_h // 2
-        draw.text((orb_x, orb_center_y - 12), "~16", fill=self.hud_color_dim, font=self.hud_font_sm)
-        draw.text((orb_x, orb_center_y + 2), "ORB/D", fill=self.hud_color_label, font=self.hud_font_lbl)
+        alt_val = f"{alt_km:,.0f} km"
+        vel_val = f"{vel_kmh:,.0f} km/h"
+        
+        # Left half for ALT
+        alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
+        alt_w = alt_bbox[2] - alt_bbox[0]
+        alt_x = (w // 2 - alt_w) // 2
+        alt_y = bot_y + (bot_h - (alt_bbox[1] + alt_bbox[3])) // 2
+        
+        # Right half for VEL
+        vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
+        vel_w = vel_bbox[2] - vel_bbox[0]
+        vel_x = w // 2 + (w // 2 - vel_w) // 2
+        vel_y = bot_y + (bot_h - (vel_bbox[1] + vel_bbox[3])) // 2
+        
+        draw.text((alt_x, alt_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((vel_x, vel_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
 
     def _draw_data_cell(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
         """Draw a bordered data cell with label and value (legacy small version)."""
