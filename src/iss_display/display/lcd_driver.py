@@ -606,17 +606,29 @@ class LcdDisplay:
         alt_val = f"{alt_km:,.0f} km"
         vel_val = f"{vel_kmh:,.0f} km/h"
         
-        # Left half for ALT
+        # Calculate dimensions and positions
+        
+        # ALT (Left) - Space-between with equal padding
         alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
         alt_w = alt_bbox[2] - alt_bbox[0]
-        alt_x = (w // 2 - alt_w) // 2
-        alt_y = bot_y + (bot_h - (alt_bbox[1] + alt_bbox[3])) // 2
+        alt_h = alt_bbox[3] - alt_bbox[1]
         
-        # Right half for VEL
+        # Vertical centering
+        alt_y = bot_y + (bot_h - (alt_bbox[1] + alt_bbox[3])) // 2
+        # Horizontal padding matches vertical padding
+        alt_pad = (bot_h - alt_h) // 2
+        alt_x = alt_pad
+        
+        # VEL (Right) - Space-between with equal padding
         vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
         vel_w = vel_bbox[2] - vel_bbox[0]
-        vel_x = w // 2 + (w // 2 - vel_w) // 2
+        vel_h = vel_bbox[3] - vel_bbox[1]
+        
+        # Vertical centering
         vel_y = bot_y + (bot_h - (vel_bbox[1] + vel_bbox[3])) // 2
+        # Horizontal padding matches vertical padding
+        vel_pad = (bot_h - vel_h) // 2
+        vel_x = w - vel_w - vel_pad
         
         draw.text((alt_x, alt_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
         draw.text((vel_x, vel_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
