@@ -29,6 +29,7 @@ except ImportError:
     HARDWARE_AVAILABLE = False
 
 from iss_display.config import Settings
+from iss_display.data.geography import get_common_area_name
 from iss_display.theme import THEME, rgb_to_hex
 
 logger = logging.getLogger(__name__)
@@ -291,7 +292,6 @@ class LcdDisplay:
         self.hud_color_dim = c.dim
         self.hud_color_border = c.border
         self.hud_color_bg = c.background
-        self.hud_color_indicator = c.indicator
 
         # Layout grid
         lay = THEME.hud_layout
@@ -354,15 +354,13 @@ class LcdDisplay:
         draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
         draw.text((lon_x, value_y), lon_val, fill=self.hud_color_primary, font=self.hud_font)
 
-        # ISS indicator
-        iss_w = lay.iss_cell_width
-        iss_x = w - g - iss_w
-        iss_center_y = top_h // 2
-        dot_r = lay.indicator_dot_radius
-        draw.ellipse([iss_x, iss_center_y - dot_r, iss_x + dot_r * 2, iss_center_y + dot_r],
-                     fill=self.hud_color_indicator)
-        draw.text((iss_x + dot_r * 2 + 4, iss_center_y - 8), "ISS",
-                  fill=self.hud_color_primary, font=self.hud_font_sm)
+        # Region indicator (right-aligned)
+        region = get_common_area_name(lat, lon)
+        right_edge = w - g
+        over_label_w = draw.textbbox((0, 0), "OVER", font=self.hud_font_lbl)[2]
+        draw.text((right_edge - over_label_w, label_y), "OVER", fill=self.hud_color_label, font=self.hud_font_lbl)
+        region_text_w = draw.textbbox((0, 0), region, font=self.hud_font_sm)[2]
+        draw.text((right_edge - region_text_w, value_y), region, fill=self.hud_color_primary, font=self.hud_font_sm)
 
         # ── Bottom bar ──
         bot_img = Image.new('RGB', (w, bot_h), self.hud_color_bg)
@@ -390,10 +388,12 @@ class LcdDisplay:
         draw.text((vel_x + vel_text_w + self.hud_unit_gap, unit_y),
                   "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
 
-        # Data age indicator
-        age_x = w - g - lay.orb_cell_width
-        draw.text((age_x, label_y), "AGE", fill=self.hud_color_label, font=self.hud_font_lbl)
-        draw.text((age_x, value_y), age_val, fill=self.hud_color_dim, font=self.hud_font_sm)
+        # Data age indicator (right-aligned)
+        right_edge = w - g
+        age_label_w = draw.textbbox((0, 0), "AGE", font=self.hud_font_lbl)[2]
+        draw.text((right_edge - age_label_w, label_y), "AGE", fill=self.hud_color_label, font=self.hud_font_lbl)
+        age_text_w = draw.textbbox((0, 0), age_val, font=self.hud_font_sm)[2]
+        draw.text((right_edge - age_text_w, value_y), age_val, fill=self.hud_color_dim, font=self.hud_font_sm)
 
         # Convert to RGB565 bytes
         self._hud_top_bytes = self._image_to_rgb565_bytes(top_img)

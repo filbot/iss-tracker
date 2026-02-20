@@ -40,24 +40,15 @@ def get_common_area_name(lat: float, lon: float) -> str:
 
     # 2. Fallback to Oceans
     if lat > 65:
-        return "the Arctic Ocean"
+        return "Arctic"
     if lat < -60:
-        return "the Southern Ocean"
-    
-    # Atlantic: roughly between Americas (-30 to -50) and Europe/Africa (-20)
-    # This is tricky with just bounding boxes.
-    # Let's use simple longitude slices for the remaining oceans.
-    
-    if -80 <= lon <= -20:
-        return "the Atlantic Ocean"
-    
-    if -20 < lon < 20:
-        # Gap between Africa and Americas? No, Africa starts at -20.
-        # This slice is mostly Atlantic but covers West Africa which is caught by LAND_REGIONS.
-        return "the Atlantic Ocean"
+        return "Southern"
 
-    if 20 <= lon <= 100:
-        return "the Indian Ocean"
-        
+    if -80 <= lon <= 20:
+        return "Atlantic"
+
+    if 20 < lon <= 100:
+        return "Indian"
+
     # Pacific is the rest (roughly 100 to 180 and -180 to -80)
-    return "the Pacific Ocean"
+    return "Pacific"

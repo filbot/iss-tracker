@@ -61,7 +61,6 @@ class HudColors:
     dim: RGB = (255, 225, 31)               # Unit suffixes (km, km/h)
     border: RGB = (60, 50, 15)             # Separator lines
     background: RGB = (0, 0, 0)         # Bar background
-    indicator: RGB = (80, 200, 100)        # ISS online dot
 
 
 @dataclass(frozen=True)
@@ -103,13 +102,9 @@ class HudLayout:
     # Cell widths for telemetry fields
     lat_cell_width: int = 95
     lon_cell_width: int = 105
-    iss_cell_width: int = 45
     alt_cell_width: int = 85
     vel_cell_width: int = 115
-    orb_cell_width: int = 50
-
-    # ISS status indicator
-    indicator_dot_radius: int = 4
+    age_cell_width: int = 50
 
 
 # ── ISS Marker ────────────────────────────────────────────────────────────
