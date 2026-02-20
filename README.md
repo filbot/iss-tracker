@@ -1,50 +1,41 @@
-## ISS E-Paper Display
+## ISS Tracker Display
 
-Self-contained Python script that fetches the latest ISS telemetry, downloads a Mapbox Static Image, renders a lightweight overlay, and drives the GeeekPi 2.13" tri-color e-paper HAT.
+Self-contained Python application that fetches real-time ISS telemetry, renders a continuously spinning 3D globe with the ISS position, and drives a 3.5" TFT LCD (320x480, ST7796S controller) on a Raspberry Pi.
 
 ### Flow
 1. Query the ISS position from `wheretheiss.at`.
-2. Request a portrait Mapbox Static Image centered on that coordinate.
-3. Draw a crosshair + telemetry banner and convert the frame into tri-color bitplanes.
-4. Send the frame to either the real panel (via the vendored tri-color driver) or a preview PNG.
+2. Render an orthographic globe projection via Cartopy, with ISS marker and occlusion effects.
+3. Overlay HUD telemetry bars (LAT, LON, ALT, VEL).
+4. Send the frame to either the LCD (via SPI) or a preview PNG.
 
 ### Hardware Prerequisites
-- Raspberry Pi Zero v1.3 or any newer Pi running Raspberry Pi OS.
-- GeeekPi 2.13" e-paper HAT connected to the SPI header.
+- Raspberry Pi 3B (or newer) running Raspberry Pi OS.
+- 3.5" IPS LCD (320x480, ST7796S) connected to the SPI header.
 - SPI enabled via `raspi-config`.
 
 ### Software Requirements
 - Python 3.10+
 - System packages: `libopenjp2-7`, `libtiff6`, etc. (installed automatically on Raspberry Pi OS).
-- Python dependencies listed in `requirements.txt` (install via `pip install -r requirements.txt`).
-- For hardware runs, the official tri-color `epd2in13.py` + `epdconfig.py` modules live inside this repo. Install `spidev`, `gpiozero`, and the rest of the Waveshare prerequisites on your Pi so the driver can talk to the panel. Use `--preview-only` if you only need PNG output.
+- Python dependencies listed in `pyproject.toml` (install via `pip install -e .`).
 
 ### Environment Variables
 Create a `.env` file in the repo root or export the variables manually:
 
 ```
-MAPBOX_TOKEN=<required Mapbox access token>
-MAPBOX_USERNAME=mapbox
-MAPBOX_STYLE_ID=streets-v12
-MAPBOX_ZOOM=2
-MAP_PIN_COLOR=#ED1C24
 ISS_API_URL=https://api.wheretheiss.at/v1/satellites/25544
-EPD_WIDTH=128
-EPD_HEIGHT=250
-EPD_LOGICAL_WIDTH=122
-EPD_PAD_LEFT=3
-EPD_PAD_RIGHT=3
-EPD_HAS_RED=true
-EPD_PREVIEW_ONLY=false
-EPD_ROTATION_DEGREES=180
+PREVIEW_ONLY=false
 ISS_PREVIEW_DIR=var/previews
 ```
 
 ### Installing & Running
 ```bash
-pip install -r requirements.txt
-python -m iss_display.app.main --preview-only  # dry run without hardware
-python -m iss_display.app.main                 # single hardware refresh
+pip install -e .
+iss-display --preview-only  # dry run without hardware
+iss-display                 # run on hardware
 ```
 
-The systemd and Makefile automation has been removed to keep the project focused on the immediate data → image → display flow. If you want to run it in a loop, wrap `python -m iss_display.app.main` with the scheduler of your choice (cron, systemd, etc.).
+Or run directly:
+```bash
+python -m iss_display.app.main --preview-only  # dry run without hardware
+python -m iss_display.app.main                 # run on hardware
+```

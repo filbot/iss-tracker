@@ -112,7 +112,8 @@ class ISSOrbitInterpolator:
                 longitude=new_lon,
                 altitude_km=self._last_fix.altitude_km,
                 velocity_kmh=self._last_fix.velocity_kmh,
-                timestamp=now
+                timestamp=now,
+                data_age_sec=dt,
             )
 
     def _do_fetch(self):

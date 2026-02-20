@@ -33,10 +33,6 @@ from iss_display.theme import THEME, rgb_to_hex
 
 logger = logging.getLogger(__name__)
 
-# ISS orbital period (~92.68 minutes)
-ISS_ORBITAL_PERIOD_SEC = 92.68 * 60
-ORBITS_PER_DAY = 86400 / ISS_ORBITAL_PERIOD_SEC
-
 # ST7796S Command Constants
 SWRESET = 0x01
 SLPIN   = 0x10
@@ -280,6 +276,14 @@ class LcdDisplay:
             self.hud_font_lbl = self.hud_font
             logger.warning("Using default bitmap font for HUD")
 
+        # Pre-compute baseline offset for unit suffix alignment
+        try:
+            val_ascent = self.hud_font.getmetrics()[0]
+            unit_ascent = self.hud_font_sm.getmetrics()[0]
+            self._unit_baseline_offset = val_ascent - unit_ascent
+        except Exception:
+            self._unit_baseline_offset = 4  # safe fallback
+
         # Color palette
         c = THEME.hud_colors
         self.hud_color_primary = c.primary
@@ -294,6 +298,9 @@ class LcdDisplay:
         self.hud_grid = lay.grid
         self.hud_top_height = lay.top_bar_height
         self.hud_bottom_height = lay.bottom_bar_height
+        self.hud_label_y = lay.label_y
+        self.hud_value_y = lay.value_y
+        self.hud_unit_gap = lay.unit_gap
 
         # Cached HUD state: track what's currently rendered to avoid redraws
         self._hud_cache_key: Optional[str] = None
@@ -316,9 +323,10 @@ class LcdDisplay:
         lon_val = f"{abs(lon):06.2f}\u00b0{lon_dir}"
         alt_val = f"{alt_km:,.0f}"
         vel_val = f"{vel_kmh:,.0f}"
-        orb_val = f"{ORBITS_PER_DAY:.0f}"
+        age_sec = int(telemetry.data_age_sec)
+        age_val = f"{age_sec}s"
 
-        cache_key = f"{lat_val}|{lon_val}|{alt_val}|{vel_val}"
+        cache_key = f"{lat_val}|{lon_val}|{alt_val}|{vel_val}|{age_sec}"
         if cache_key == self._hud_cache_key:
             return cache_key
 
@@ -332,25 +340,19 @@ class LcdDisplay:
         draw = ImageDraw.Draw(top_img)
         draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
 
-        label_y = g
-        value_y = g * 3
+        label_y = self.hud_label_y
+        value_y = self.hud_value_y
 
         # LAT cell
         lay = THEME.hud_layout
         lat_x = g
-        lat_w = lay.lat_cell_width
         draw.text((lat_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        lat_bbox = draw.textbbox((0, 0), lat_val, font=self.hud_font)
-        draw.text((lat_x + lat_w - (lat_bbox[2] - lat_bbox[0]), value_y),
-                  lat_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((lat_x, value_y), lat_val, fill=self.hud_color_primary, font=self.hud_font)
 
         # LON cell
-        lon_x = lat_x + lat_w + g
-        lon_w = lay.lon_cell_width
+        lon_x = lat_x + lay.lat_cell_width + g
         draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
-        lon_bbox = draw.textbbox((0, 0), lon_val, font=self.hud_font)
-        draw.text((lon_x + lon_w - (lon_bbox[2] - lon_bbox[0]), value_y),
-                  lon_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((lon_x, value_y), lon_val, fill=self.hud_color_primary, font=self.hud_font)
 
         # ISS indicator
         iss_w = lay.iss_cell_width
@@ -367,33 +369,31 @@ class LcdDisplay:
         draw = ImageDraw.Draw(bot_img)
         draw.line([0, 0, w, 0], fill=self.hud_color_border)
 
-        label_y = g
-        value_y = g * 3
+        label_y = self.hud_label_y
+        value_y = self.hud_value_y
+        unit_y = value_y + self._unit_baseline_offset
 
         # ALT cell
         alt_x = g
         alt_w = lay.alt_cell_width
         draw.text((alt_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
-        val_x = alt_x + alt_w - (alt_bbox[2] - alt_bbox[0]) - 22
-        draw.text((val_x, value_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
-        draw.text((alt_x + alt_w - 18, value_y + 4), "km", fill=self.hud_color_dim, font=self.hud_font_sm)
+        draw.text((alt_x, value_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
+        alt_text_w = draw.textbbox((0, 0), alt_val, font=self.hud_font)[2]
+        draw.text((alt_x + alt_text_w + self.hud_unit_gap, unit_y),
+                  "km", fill=self.hud_color_dim, font=self.hud_font_sm)
 
         # VEL cell
         vel_x = alt_x + alt_w + g
-        vel_w = lay.vel_cell_width
         draw.text((vel_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
-        vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
-        val_x = vel_x + vel_w - (vel_bbox[2] - vel_bbox[0]) - 32
-        draw.text((val_x, value_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
-        draw.text((vel_x + vel_w - 28, value_y + 4), "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
+        draw.text((vel_x, value_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
+        vel_text_w = draw.textbbox((0, 0), vel_val, font=self.hud_font)[2]
+        draw.text((vel_x + vel_text_w + self.hud_unit_gap, unit_y),
+                  "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
 
-        # ORBIT indicator
-        orb_w = lay.orb_cell_width
-        orb_x = w - g - orb_w
-        orb_center_y = bot_h // 2
-        draw.text((orb_x, orb_center_y - 12), orb_val, fill=self.hud_color_dim, font=self.hud_font_sm)
-        draw.text((orb_x, orb_center_y + 2), "ORB/D", fill=self.hud_color_label, font=self.hud_font_lbl)
+        # Data age indicator
+        age_x = w - g - lay.orb_cell_width
+        draw.text((age_x, label_y), "AGE", fill=self.hud_color_label, font=self.hud_font_lbl)
+        draw.text((age_x, value_y), age_val, fill=self.hud_color_dim, font=self.hud_font_sm)
 
         # Convert to RGB565 bytes
         self._hud_top_bytes = self._image_to_rgb565_bytes(top_img)

@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: iss-display
 Version: 0.1.0
-Summary: Self-contained ISS tracker for GeeekPi 2.13 inch e-paper
+Summary: Self-contained ISS tracker with 3D globe on 3.5 inch TFT LCD
 Author: ISS Display Maintainers
 Requires-Python: >=3.10
 License-File: LICENSE

@@ -47,7 +47,7 @@ class Settings:
             display_width=int(os.getenv("DISPLAY_WIDTH", "320")),
             display_height=int(os.getenv("DISPLAY_HEIGHT", "480")),
             preview_dir=preview_dir,
-            preview_only=_as_bool(os.getenv("EPD_PREVIEW_ONLY", "false"), default=False),
+            preview_only=_as_bool(os.getenv("PREVIEW_ONLY", "false"), default=False),
             log_level=os.getenv("ISS_LOG_LEVEL", "INFO"),
             gpio_dc=int(os.getenv("GPIO_DC", "22")),
             gpio_rst=int(os.getenv("GPIO_RST", "27")),

@@ -15,7 +15,6 @@ src/iss_display/data/__init__.py
 src/iss_display/data/iss_client.py
 src/iss_display/data/mapbox_client.py
 src/iss_display/display/__init__.py
-src/iss_display/display/epaper_driver.py
 src/iss_display/pipeline/__init__.py
 src/iss_display/pipeline/image_preprocessor.py
 src/iss_display/pipeline/layout.py

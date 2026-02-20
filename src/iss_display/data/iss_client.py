@@ -26,6 +26,7 @@ class ISSFix:
     altitude_km: Optional[float]
     velocity_kmh: Optional[float]
     timestamp: float
+    data_age_sec: float = 0.0              # Seconds since last successful API fetch
 
 
 class ISSClient:

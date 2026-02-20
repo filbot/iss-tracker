@@ -74,6 +74,8 @@ class HudTypography:
 
     # Monospace fonts to try, in order of preference
     font_search_paths: Tuple[str, ...] = (
+        "/usr/share/fonts/opentype/b612/B612Mono-Bold.otf",       # Airbus/ENAC cockpit font
+        "/usr/share/fonts/opentype/b612/B612Mono-Regular.otf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
@@ -92,6 +94,11 @@ class HudLayout:
     grid: int = 8                          # Base grid unit (px)
     top_bar_height: int = 48               # Top HUD bar height
     bottom_bar_height: int = 48            # Bottom HUD bar height
+
+    # Vertical positioning within bars (Y coordinates)
+    label_y: int = 6                       # Y for label text
+    value_y: int = 22                      # Y for value text
+    unit_gap: int = 2                      # Gap between value and unit suffix (px)
 
     # Cell widths for telemetry fields
     lat_cell_width: int = 95

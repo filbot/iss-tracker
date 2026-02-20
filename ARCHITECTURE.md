@@ -67,12 +67,6 @@ No tests exist for the LCD pipeline, interpolator, HUD, or ST7796S driver.
 | `start.sh` | Start the app manually: `./start.sh` (or `./start.sh --preview-only`) |
 | `stop.sh` | Stop a running instance: `./stop.sh` (sends SIGTERM) |
 
-### Legacy (not part of active codebase)
-
-| Path | Notes |
-|------|-------|
-| `src/e-paper-driver/` | Standalone e-paper driver demos/setup, not imported by the app |
-
 ---
 
 ## Rendering Pipeline
@@ -213,7 +207,7 @@ All settings loaded from `.env` via `Settings.load()` in `config.py`.
 | `SPI_BUS` | `0` | `ST7796S` |
 | `SPI_DEVICE` | `0` | `ST7796S` |
 | `SPI_SPEED_HZ` | `40000000` | `ST7796S` (40 MHz max) |
-| `EPD_PREVIEW_ONLY` | `false` | `LcdDisplay` (hardware vs preview) |
+| `PREVIEW_ONLY` | `false` | `LcdDisplay` (hardware vs preview) |
 | `ISS_PREVIEW_DIR` | `var/previews` | Preview output path |
 | `ISS_LOG_LEVEL` | `INFO` | Logging |
 

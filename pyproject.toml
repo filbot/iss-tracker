@@ -1,7 +1,7 @@
 [project]
 name = "iss-display"
 version = "0.1.0"
-description = "Self-contained ISS tracker for GeeekPi 2.13 inch e-paper"
+description = "Self-contained ISS tracker with 3D globe on 3.5 inch TFT LCD"
 authors = [{name = "ISS Display Maintainers"}]
 requires-python = ">=3.10"
 dependencies = [
