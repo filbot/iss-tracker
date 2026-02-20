@@ -37,7 +37,7 @@ class GlobeStyle:
     rotation_period_sec: float = 10.0      # Seconds for one full rotation (independent of num_frames)
 
     # Colors (all RGB)
-    background: RGB = (5, 5, 16)
+    background: RGB = (0, 0, 0)
     ocean_color: RGB = (0, 17, 51)
     land_color: RGB = (255, 255, 255)
     land_border_color: RGB = (204, 204, 204)
@@ -57,10 +57,10 @@ class HudColors:
     """HUD color palette — NASA amber theme."""
 
     primary: RGB = (52, 219, 235)           # Main readout values
-    label: RGB = (160, 135, 30)            # Field labels (LAT, LON, etc.)
-    dim: RGB = (100, 85, 20)               # Unit suffixes (km, km/h)
+    label: RGB = (255, 225, 31)            # Field labels (LAT, LON, etc.)
+    dim: RGB = (255, 225, 31)               # Unit suffixes (km, km/h)
     border: RGB = (60, 50, 15)             # Separator lines
-    background: RGB = (12, 12, 24)         # Bar background
+    background: RGB = (0, 0, 0)         # Bar background
     indicator: RGB = (80, 200, 100)        # ISS online dot
 
 

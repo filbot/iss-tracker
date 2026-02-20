@@ -2,7 +2,7 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, Union, TYPE_CHECKING
 import io
 
 from PIL import Image, ImageDraw, ImageFont
@@ -155,7 +155,7 @@ class ST7796S:
 
         self.command(RAMWR)
 
-    def display_raw(self, pixel_bytes: bytes):
+    def display_raw(self, pixel_bytes: Union[bytes, bytearray]):
         """Display pre-converted RGB565 data directly."""
         self.command(RAMWR)
         GPIO.output(self.dc, GPIO.HIGH)
@@ -694,17 +694,16 @@ class LcdDisplay:
         self._patch_hud_bytes(frame_buf)
 
         # Send to display
-        pixel_bytes = bytes(frame_buf)
         if self.driver:
-            self.driver.display_raw(pixel_bytes)
+            self.driver.display_raw(frame_buf)
 
         # Preview mode: save occasional PNGs
         if self.driver is None:
             self._preview_frame_count += 1
             if self._preview_frame_count % 30 == 1:
-                self._save_preview(pixel_bytes)
+                self._save_preview(frame_buf)
 
-    def _save_preview(self, pixel_bytes: bytes):
+    def _save_preview(self, pixel_bytes: Union[bytes, bytearray]):
         """Save an RGB565 frame buffer as a PNG preview image."""
         try:
             arr = np.frombuffer(pixel_bytes, dtype='>u2').reshape(self.height, self.width)
