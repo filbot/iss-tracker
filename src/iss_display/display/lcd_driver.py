@@ -29,6 +29,7 @@ except ImportError:
     HARDWARE_AVAILABLE = False
 
 from iss_display.config import Settings
+from iss_display.theme import THEME
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +219,8 @@ class LcdDisplay:
             raise ImportError("Cartopy is required for rendering the globe")
 
         # Globe geometry (computed once during frame generation)
-        self.globe_scale = 0.70
-        self.iss_orbit_scale = 1.10
+        self.globe_scale = THEME.globe.scale
+        self.iss_orbit_scale = THEME.globe.iss_orbit_scale
         self.globe_center_x = self.width // 2
         self.globe_center_y = self.height // 2
         self.globe_radius_px = int(min(self.width, self.height) * self.globe_scale) // 2
@@ -227,7 +228,7 @@ class LcdDisplay:
         # Pre-rendered frame caches
         self.frame_cache: List[Image.Image] = []
         self.frame_bytes_cache: List[bytes] = []
-        self.num_frames = 72
+        self.num_frames = THEME.globe.num_frames
         self.current_frame = 0
         self.frames_generated = False
 
@@ -249,21 +250,12 @@ class LcdDisplay:
 
     def _init_hud(self):
         """Initialize HUD fonts, colors, and cached bars."""
-        # Typography scale (1.33 ratio - perfect fourth)
-        self.hud_font_value_size = 20
-        self.hud_font_unit_size = 15
-        self.hud_font_label_size = 11
+        typo = THEME.hud_typography
+        self.hud_font_value_size = typo.value_size
+        self.hud_font_unit_size = typo.unit_size
+        self.hud_font_label_size = typo.label_size
 
-        mono_fonts = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
-            "/System/Library/Fonts/Menlo.ttc",
-            "/System/Library/Fonts/Monaco.ttf",
-        ]
+        mono_fonts = list(typo.font_search_paths)
 
         self.hud_font = None
         self.hud_font_sm = None
@@ -285,18 +277,20 @@ class LcdDisplay:
             self.hud_font_lbl = self.hud_font
             logger.warning("Using default bitmap font for HUD")
 
-        # Color palette (NASA amber theme)
-        self.hud_color_primary = (255, 210, 0)
-        self.hud_color_label = (160, 135, 30)
-        self.hud_color_dim = (100, 85, 20)
-        self.hud_color_border = (60, 50, 15)
-        self.hud_color_bg = (12, 12, 24)
-        self.hud_color_indicator = (80, 200, 100)
+        # Color palette
+        c = THEME.hud_colors
+        self.hud_color_primary = c.primary
+        self.hud_color_label = c.label
+        self.hud_color_dim = c.dim
+        self.hud_color_border = c.border
+        self.hud_color_bg = c.background
+        self.hud_color_indicator = c.indicator
 
         # Layout grid
-        self.hud_grid = 8
-        self.hud_top_height = 48
-        self.hud_bottom_height = 48
+        lay = THEME.hud_layout
+        self.hud_grid = lay.grid
+        self.hud_top_height = lay.top_bar_height
+        self.hud_bottom_height = lay.bottom_bar_height
 
         # Cached HUD state: track what's currently rendered to avoid redraws
         self._hud_cache_key: Optional[str] = None
@@ -339,8 +333,9 @@ class LcdDisplay:
         value_y = g * 3
 
         # LAT cell
+        lay = THEME.hud_layout
         lat_x = g
-        lat_w = 95
+        lat_w = lay.lat_cell_width
         draw.text((lat_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
         lat_bbox = draw.textbbox((0, 0), lat_val, font=self.hud_font)
         draw.text((lat_x + lat_w - (lat_bbox[2] - lat_bbox[0]), value_y),
@@ -348,17 +343,17 @@ class LcdDisplay:
 
         # LON cell
         lon_x = lat_x + lat_w + g
-        lon_w = 105
+        lon_w = lay.lon_cell_width
         draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
         lon_bbox = draw.textbbox((0, 0), lon_val, font=self.hud_font)
         draw.text((lon_x + lon_w - (lon_bbox[2] - lon_bbox[0]), value_y),
                   lon_val, fill=self.hud_color_primary, font=self.hud_font)
 
         # ISS indicator
-        iss_w = 45
+        iss_w = lay.iss_cell_width
         iss_x = w - g - iss_w
         iss_center_y = top_h // 2
-        dot_r = 4
+        dot_r = lay.indicator_dot_radius
         draw.ellipse([iss_x, iss_center_y - dot_r, iss_x + dot_r * 2, iss_center_y + dot_r],
                      fill=self.hud_color_indicator)
         draw.text((iss_x + dot_r * 2 + 4, iss_center_y - 8), "ISS",
@@ -374,7 +369,7 @@ class LcdDisplay:
 
         # ALT cell
         alt_x = g
-        alt_w = 85
+        alt_w = lay.alt_cell_width
         draw.text((alt_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
         alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
         val_x = alt_x + alt_w - (alt_bbox[2] - alt_bbox[0]) - 22
@@ -383,7 +378,7 @@ class LcdDisplay:
 
         # VEL cell
         vel_x = alt_x + alt_w + g
-        vel_w = 115
+        vel_w = lay.vel_cell_width
         draw.text((vel_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
         vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
         val_x = vel_x + vel_w - (vel_bbox[2] - vel_bbox[0]) - 32
@@ -391,7 +386,7 @@ class LcdDisplay:
         draw.text((vel_x + vel_w - 28, value_y + 4), "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
 
         # ORBIT indicator
-        orb_w = 50
+        orb_w = lay.orb_cell_width
         orb_x = w - g - orb_w
         orb_center_y = bot_h // 2
         draw.text((orb_x, orb_center_y - 12), orb_val, fill=self.hud_color_dim, font=self.hud_font_sm)
@@ -488,8 +483,9 @@ class LcdDisplay:
 
     def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
         """Render a single globe frame at the given central longitude."""
-        bg_color = '#050510'
-        bg_rgb = (5, 5, 16)
+        g = THEME.globe
+        bg_color = g.background_hex
+        bg_rgb = g.background_rgb
 
         globe_size = int(min(self.width, self.height) * self.globe_scale)
         dpi = 100
@@ -500,10 +496,12 @@ class LcdDisplay:
         ax.set_facecolor(bg_color)
         ax.set_global()
 
-        ax.add_feature(cfeature.OCEAN, facecolor='#001133', edgecolor='none', zorder=0)
-        ax.add_feature(cfeature.LAND, facecolor='#FFFFFF', edgecolor='#CCCCCC', linewidth=0.5, zorder=1)
-        ax.add_feature(cfeature.COASTLINE, edgecolor='#888888', linewidth=0.5, zorder=2)
-        ax.gridlines(color='#444444', linewidth=0.3, alpha=0.5, linestyle='-')
+        ax.add_feature(cfeature.OCEAN, facecolor=g.ocean_color, edgecolor='none', zorder=0)
+        ax.add_feature(cfeature.LAND, facecolor=g.land_color, edgecolor=g.land_border_color,
+                        linewidth=g.land_border_width, zorder=1)
+        ax.add_feature(cfeature.COASTLINE, edgecolor=g.coastline_color,
+                        linewidth=g.coastline_width, zorder=2)
+        ax.gridlines(color=g.grid_color, linewidth=g.grid_width, alpha=g.grid_alpha, linestyle='-')
         ax.spines['geo'].set_visible(False)
 
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
@@ -543,7 +541,8 @@ class LcdDisplay:
             return None
 
         # Opacity for limb transition
-        fade_start = 0.05
+        m = THEME.marker
+        fade_start = m.fade_start
         if cos_c < fade_start:
             opacity = (cos_c - horizon_threshold) / (fade_start - horizon_threshold)
             opacity = max(0.0, min(1.0, opacity))
@@ -569,9 +568,9 @@ class LcdDisplay:
             dist = math.sqrt((px - self.globe_center_x)**2 + (py - self.globe_center_y)**2)
             if dist < self.globe_radius_px:
                 occlusion = 1.0 - (self.globe_radius_px - dist) / self.globe_radius_px
-                opacity *= occlusion * 0.3
+                opacity *= occlusion * m.occlusion_factor
 
-        if opacity < 0.05:
+        if opacity < m.opacity_cutoff:
             return None
 
         return (px, py, opacity)
@@ -581,29 +580,30 @@ class LcdDisplay:
 
         Draws concentric glow rings + core + center dot using direct byte writes.
         """
-        size_scale = 0.6 + 0.4 * opacity
+        m = THEME.marker
+        size_scale = m.min_size_scale + (m.max_size_scale - m.min_size_scale) * opacity
         w = self.width
 
         # Pre-compute marker pixel colors at varying radii
         # Glow rings (outer to inner)
         rings = []
-        for i in range(3):
-            r = int((7 - i * 2) * size_scale)
+        for i in range(m.ring_count):
+            r = int((m.outer_ring_radius - i * m.ring_step) * size_scale)
             if r < 1:
                 continue
-            base_brightness = int((50 + i * 40) * opacity)
-            color = _rgb_to_rgb565(int(255 * opacity), base_brightness, base_brightness)
+            base_brightness = int((m.ring_brightness_base + i * m.ring_brightness_step) * opacity)
+            color = _rgb_to_rgb565(int(m.glow_color[0] * opacity), base_brightness, base_brightness)
             rings.append((r * r, color))
 
-        core_r = max(1, int(3 * size_scale))
-        core_color = _rgb_to_rgb565(int(255 * opacity), 0, 0)
+        core_r = max(1, int(m.core_radius * size_scale))
+        core_color = _rgb_to_rgb565(int(m.core_color[0] * opacity), 0, 0)
 
-        show_center = opacity > 0.5
-        center_b = int(255 * opacity)
+        show_center = opacity > m.center_dot_opacity_threshold
+        center_b = int(m.center_color[0] * opacity)
         center_color = _rgb_to_rgb565(center_b, center_b, center_b)
 
         # Determine bounding box for the marker
-        max_r = int(7 * size_scale) + 1
+        max_r = int(m.outer_ring_radius * size_scale) + 1
         y_start = max(0, py - max_r)
         y_end = min(self.height - 1, py + max_r)
         x_start = max(0, px - max_r)
