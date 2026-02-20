@@ -1,13 +1,13 @@
 import logging
-import time
 import math
+import time
 from pathlib import Path
 from typing import Optional, List, TYPE_CHECKING
 import io
 
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -32,12 +32,15 @@ from iss_display.config import Settings
 
 logger = logging.getLogger(__name__)
 
+# ISS orbital period (~92.68 minutes)
+ISS_ORBITAL_PERIOD_SEC = 92.68 * 60
+ORBITS_PER_DAY = 86400 / ISS_ORBITAL_PERIOD_SEC
+
 # ST7796S Command Constants
 SWRESET = 0x01
-SLPIN   = 0x10  # Sleep in (low power mode)
+SLPIN   = 0x10
 SLPOUT  = 0x11
 NORON   = 0x13
-INVOFF  = 0x20
 INVON   = 0x21
 DISPOFF = 0x28
 DISPON  = 0x29
@@ -47,16 +50,23 @@ RAMWR   = 0x2C
 MADCTL  = 0x36
 COLMOD  = 0x3A
 
+
+def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
+    """Convert an RGB color to a 16-bit RGB565 value (big-endian byte order)."""
+    val = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+    return val
+
+
 class ST7796S:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.width = settings.display_width
         self.height = settings.display_height
-        
+
         self.dc = settings.gpio_dc
         self.rst = settings.gpio_rst
         self.bl = settings.gpio_bl
-        
+
         self._init_gpio()
         self._init_spi()
         self._init_display()
@@ -67,7 +77,7 @@ class ST7796S:
         GPIO.setup(self.dc, GPIO.OUT)
         GPIO.setup(self.rst, GPIO.OUT)
         GPIO.setup(self.bl, GPIO.OUT)
-        GPIO.output(self.bl, GPIO.LOW) # Backlight off initially
+        GPIO.output(self.bl, GPIO.LOW)
 
     def _init_spi(self):
         self.spi = spidev.SpiDev()
@@ -90,70 +100,44 @@ class ST7796S:
     def data(self, data: int):
         GPIO.output(self.dc, GPIO.HIGH)
         self.spi.writebytes([data])
-        
-    def data_list(self, data: List[int]):
-        GPIO.output(self.dc, GPIO.HIGH)
-        # Split into chunks if too large (standard spidev limit is often 4096)
-        chunk_size = 4096
-        for i in range(0, len(data), chunk_size):
-            self.spi.writebytes(data[i:i+chunk_size])
 
     def _init_display(self):
         self._reset()
-        
+
         self.command(SWRESET)
         time.sleep(0.15)
-        
+
         self.command(SLPOUT)
         time.sleep(0.15)
-        
-        # Interface Pixel Format
+
         self.command(COLMOD)
-        self.data(0x55) # 16-bit/pixel
-        
-        # Memory Access Control
-        # Bits: MY MX MV ML BGR MH 0 0
-        # 0x48 = 0100 1000 = MX=1, BGR=1
-        # BGR=1 is needed because ST7796S panels typically have BGR subpixel order
+        self.data(0x55)  # 16-bit/pixel
+
+        # Memory Access Control: MX=1, BGR=1
         self.command(MADCTL)
         self.data(0x48)
-        
-        # Display Inversion On (some displays need INVOFF instead)
+
         self.command(INVON)
-        
-        # Power Control and other settings can be default for now
-        
+
         self.command(NORON)
         time.sleep(0.01)
-        
+
         self.command(DISPON)
         time.sleep(0.01)
-        
-        # Turn on backlight
+
         GPIO.output(self.bl, GPIO.HIGH)
-        
-        # Set window to full screen once - we'll reuse this for all frames
+
         self.set_window(0, 0, self.width - 1, self.height - 1)
-        
-        # Clear screen to black
-        self._test_fill(0x0000)
-    
-    def _test_fill(self, color: int):
+        self._fill(0x0000)
+
+    def _fill(self, color: int):
         """Fill the entire screen with a solid color (RGB565)."""
         self.set_window(0, 0, self.width - 1, self.height - 1)
-        
         high = (color >> 8) & 0xFF
         low = color & 0xFF
-        
-        # Create pixel data for entire screen
-        total_pixels = self.width * self.height
-        pixel_data = [high, low] * total_pixels
-        
+        pixel_data = bytes([high, low] * (self.width * self.height))
         GPIO.output(self.dc, GPIO.HIGH)
-        
-        chunk_size = 4096
-        for i in range(0, len(pixel_data), chunk_size):
-            self.spi.writebytes(pixel_data[i:i+chunk_size])
+        self.spi.writebytes2(pixel_data)
 
     def set_window(self, x0, y0, x1, y1):
         self.command(CASET)
@@ -161,97 +145,51 @@ class ST7796S:
         self.data(x0 & 0xFF)
         self.data(x1 >> 8)
         self.data(x1 & 0xFF)
-        
+
         self.command(RASET)
         self.data(y0 >> 8)
         self.data(y0 & 0xFF)
         self.data(y1 >> 8)
         self.data(y1 & 0xFF)
-        
+
         self.command(RAMWR)
 
     def display_raw(self, pixel_bytes: bytes):
-        """Display pre-converted RGB565 data directly - fastest path."""
-        # Send RAMWR command to continue writing (window already set at init)
+        """Display pre-converted RGB565 data directly."""
         self.command(RAMWR)
         GPIO.output(self.dc, GPIO.HIGH)
-        
-        # Single large write - spidev can handle it internally
-        # writebytes2 accepts bytes directly and is faster than writebytes
         self.spi.writebytes2(pixel_bytes)
 
-    def display(self, image: Image.Image):
-        if image.width != self.width or image.height != self.height:
-            image = image.resize((self.width, self.height))
-            
-        # Convert to RGB565 - standard format
-        # RGB565: RRRRR GGGGGG BBBBB (16 bits total)
-        img_np = np.array(image)  # (H, W, 3) RGB as uint8
-        
-        # CRITICAL: Must cast to uint16 BEFORE shifting, otherwise numpy uint8 overflows!
-        r = img_np[..., 0].astype(np.uint16)
-        g = img_np[..., 1].astype(np.uint16)
-        b = img_np[..., 2].astype(np.uint16)
-        
-        # Standard RGB565 format
-        # Red:   5 bits in positions 15-11
-        # Green: 6 bits in positions 10-5
-        # Blue:  5 bits in positions 4-0
-        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        
-        # Convert to bytes efficiently using numpy's tobytes()
-        # Swap bytes for big-endian format expected by display
-        rgb565_be = rgb565.astype('>u2')  # Big-endian uint16
-        pixel_bytes = rgb565_be.tobytes()
-        
-        self.set_window(0, 0, self.width - 1, self.height - 1)
-        GPIO.output(self.dc, GPIO.HIGH)
-        
-        # Write in larger chunks using writebytes2 (accepts bytes directly)
-        chunk_size = 32768  # 32KB chunks
-        for i in range(0, len(pixel_bytes), chunk_size):
-            self.spi.writebytes2(pixel_bytes[i:i+chunk_size])
-
     def close(self):
-        """Properly shut down the display - clear, turn off, and enter sleep."""
+        """Properly shut down the display."""
         try:
-            # 1. Turn off backlight FIRST
             GPIO.output(self.bl, GPIO.LOW)
-            
-            # 2. Fill with black multiple times to fully discharge LCD pixels
-            # This helps prevent image retention/ghosting
-            black_screen = bytes([0x00, 0x00] * (self.width * self.height))
-            for _ in range(3):  # Multiple passes to fully discharge
+
+            black_screen = bytes(self.width * self.height * 2)
+            for _ in range(3):
                 self.set_window(0, 0, self.width - 1, self.height - 1)
                 self.command(RAMWR)
                 GPIO.output(self.dc, GPIO.HIGH)
-                for i in range(0, len(black_screen), 32768):
-                    self.spi.writebytes2(black_screen[i:i+32768])
+                self.spi.writebytes2(black_screen)
                 time.sleep(0.05)
-            
-            # 3. Turn off the display output
+
             self.command(DISPOFF)
             time.sleep(0.05)
-            
-            # 4. Enter sleep mode (minimum power, internal oscillator off)
+
             self.command(SLPIN)
-            time.sleep(0.12)  # 120ms required per datasheet
-            
-            # 5. Hardware reset - hold low to fully disable controller
+            time.sleep(0.12)
+
             GPIO.output(self.rst, GPIO.LOW)
-            
-            # 6. Ensure backlight stays off
             GPIO.output(self.bl, GPIO.LOW)
-            
+
             logger.info("Display turned off and cleared")
         except Exception as e:
             logger.warning(f"Error during display shutdown: {e}")
         finally:
             try:
                 self.spi.close()
-            except:
+            except Exception:
                 pass
-            GPIO.cleanup()
             GPIO.cleanup()
 
 
@@ -260,7 +198,8 @@ class LcdDisplay:
         self.settings = settings
         self.width = settings.display_width
         self.height = settings.display_height
-        
+        self._bytes_per_row = self.width * 2  # 2 bytes per pixel (RGB565)
+
         self.driver: Optional[ST7796S] = None
         if not settings.preview_only and HARDWARE_AVAILABLE:
             try:
@@ -271,49 +210,50 @@ class LcdDisplay:
                 self.driver = None
         else:
             if not HARDWARE_AVAILABLE:
-                logger.warning("Hardware libraries (spidev/RPi.GPIO) not found. Running in preview mode.")
+                logger.warning("Hardware libraries not found. Running in preview mode.")
             else:
                 logger.info("Running in preview-only mode")
-        
+
         if not CARTOPY_AVAILABLE:
-            logger.error("Cartopy is not installed. Please run: pip install cartopy")
             raise ImportError("Cartopy is required for rendering the globe")
-        
-        # Pre-rendered frame cache - stores PIL Images for ISS overlay
+
+        # Globe geometry (computed once during frame generation)
+        self.globe_scale = 0.70
+        self.iss_orbit_scale = 1.10
+        self.globe_center_x = self.width // 2
+        self.globe_center_y = self.height // 2
+        self.globe_radius_px = int(min(self.width, self.height) * self.globe_scale) // 2
+
+        # Pre-rendered frame caches
         self.frame_cache: List[Image.Image] = []
-        # Pre-computed RGB565 bytes for frames without ISS marker - fastest display path
         self.frame_bytes_cache: List[bytes] = []
-        self.num_frames = 72  # 72 frames = 5 degrees per frame for full rotation
+        self.num_frames = 72
         self.current_frame = 0
         self.frames_generated = False
-        
+
         # Cache directory
         self.cache_dir = self.settings.preview_dir.parent / "frame_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Current image
-        self.image: Optional[Image.Image] = None
-        
-        # Try to load cached frames or generate them
+
+        # Load or generate globe frames
         self._load_or_generate_frames()
-        
-        # Pre-compute RGB565 bytes for all frames
         self._precompute_rgb565()
-        
-        # Initialize HUD renderer
+
+        # HUD setup
         self._init_hud()
 
+        # Preview frame counter
+        self._preview_frame_count = 0
+
+    # ─── HUD ──────────────────────────────────────────────────────────────
+
     def _init_hud(self):
-        """Initialize HUD fonts and colors with proper typography principles."""
-        # ═══════════════════════════════════════════════════════════════════════
-        # TYPOGRAPHY SCALE (based on 1.33 ratio - perfect fourth)
-        # Values: 20px (primary) → 15px (secondary) → 11px (labels)
-        # ═══════════════════════════════════════════════════════════════════════
-        self.hud_font_value = 20      # Primary data values - bold, prominent
-        self.hud_font_unit = 15       # Units and secondary info
-        self.hud_font_label = 11      # Labels - small, uppercase, high contrast
-        
-        # Try system monospace fonts
+        """Initialize HUD fonts, colors, and cached bars."""
+        # Typography scale (1.33 ratio - perfect fourth)
+        self.hud_font_value_size = 20
+        self.hud_font_unit_size = 15
+        self.hud_font_label_size = 11
+
         mono_fonts = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -321,61 +261,160 @@ class LcdDisplay:
             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
             "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
             "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
-            "/System/Library/Fonts/Menlo.ttc",  # macOS
-            "/System/Library/Fonts/Monaco.ttf",  # macOS
+            "/System/Library/Fonts/Menlo.ttc",
+            "/System/Library/Fonts/Monaco.ttf",
         ]
-        
+
         self.hud_font = None
         self.hud_font_sm = None
         self.hud_font_lbl = None
-        
+
         for font_path in mono_fonts:
             try:
-                self.hud_font = ImageFont.truetype(font_path, self.hud_font_value)
-                self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_unit)
-                self.hud_font_lbl = ImageFont.truetype(font_path, self.hud_font_label)
+                self.hud_font = ImageFont.truetype(font_path, self.hud_font_value_size)
+                self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_unit_size)
+                self.hud_font_lbl = ImageFont.truetype(font_path, self.hud_font_label_size)
                 logger.info(f"Loaded HUD font: {font_path}")
                 break
             except (OSError, IOError):
                 continue
-        
+
         if self.hud_font is None:
-            # Fall back to default bitmap font
             self.hud_font = ImageFont.load_default()
             self.hud_font_sm = self.hud_font
             self.hud_font_lbl = self.hud_font
             logger.warning("Using default bitmap font for HUD")
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # COLOR PALETTE (NASA/military amber theme with proper contrast ratios)
-        # Follows WCAG-like contrast: labels at ~40% luminance, values at 100%
-        # ═══════════════════════════════════════════════════════════════════════
-        self.hud_color_primary = (255, 210, 0)      # Bright amber - values
-        self.hud_color_label = (160, 135, 30)       # Muted amber - labels (~60% of primary)
-        self.hud_color_dim = (100, 85, 20)          # Dim amber - units, borders
-        self.hud_color_border = (60, 50, 15)        # Subtle border
-        self.hud_color_bg = (12, 12, 24)            # Deep blue-black
-        self.hud_color_indicator = (80, 200, 100)   # Green for live indicator
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        # LAYOUT GRID (8px baseline for consistent spacing)
-        # Total bar height: 48px (6 × 8px units)
-        # ═══════════════════════════════════════════════════════════════════════
-        self.hud_grid = 8             # Base unit for all spacing
-        self.hud_top_height = 48      # 6 grid units
-        self.hud_bottom_height = 48   # 6 grid units
-        self.hud_padding = 8          # 1 grid unit padding
-        self.hud_gap = 16             # 2 grid units between cells
 
-    def _image_to_rgb565_bytes(self, image: Image.Image) -> bytes:
+        # Color palette (NASA amber theme)
+        self.hud_color_primary = (255, 210, 0)
+        self.hud_color_label = (160, 135, 30)
+        self.hud_color_dim = (100, 85, 20)
+        self.hud_color_border = (60, 50, 15)
+        self.hud_color_bg = (12, 12, 24)
+        self.hud_color_indicator = (80, 200, 100)
+
+        # Layout grid
+        self.hud_grid = 8
+        self.hud_top_height = 48
+        self.hud_bottom_height = 48
+
+        # Cached HUD state: track what's currently rendered to avoid redraws
+        self._hud_cache_key: Optional[str] = None
+        self._hud_top_bytes: Optional[bytes] = None
+        self._hud_bottom_bytes: Optional[bytes] = None
+
+    def _render_hud_bars(self, telemetry: "ISSFix") -> str:
+        """Render top and bottom HUD bars and cache as RGB565 bytes.
+
+        Returns the cache key string so callers can check if it changed.
+        """
+        lat = telemetry.latitude
+        lon = telemetry.longitude
+        alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
+        vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
+
+        lat_dir = "N" if lat >= 0 else "S"
+        lon_dir = "E" if lon >= 0 else "W"
+        lat_val = f"{abs(lat):05.2f}\u00b0{lat_dir}"
+        lon_val = f"{abs(lon):06.2f}\u00b0{lon_dir}"
+        alt_val = f"{alt_km:,.0f}"
+        vel_val = f"{vel_kmh:,.0f}"
+        orb_val = f"{ORBITS_PER_DAY:.0f}"
+
+        cache_key = f"{lat_val}|{lon_val}|{alt_val}|{vel_val}"
+        if cache_key == self._hud_cache_key:
+            return cache_key
+
+        w = self.width
+        g = self.hud_grid
+        top_h = self.hud_top_height
+        bot_h = self.hud_bottom_height
+
+        # ── Top bar ──
+        top_img = Image.new('RGB', (w, top_h), self.hud_color_bg)
+        draw = ImageDraw.Draw(top_img)
+        draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
+
+        label_y = g
+        value_y = g * 3
+
+        # LAT cell
+        lat_x = g
+        lat_w = 95
+        draw.text((lat_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
+        lat_bbox = draw.textbbox((0, 0), lat_val, font=self.hud_font)
+        draw.text((lat_x + lat_w - (lat_bbox[2] - lat_bbox[0]), value_y),
+                  lat_val, fill=self.hud_color_primary, font=self.hud_font)
+
+        # LON cell
+        lon_x = lat_x + lat_w + g
+        lon_w = 105
+        draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
+        lon_bbox = draw.textbbox((0, 0), lon_val, font=self.hud_font)
+        draw.text((lon_x + lon_w - (lon_bbox[2] - lon_bbox[0]), value_y),
+                  lon_val, fill=self.hud_color_primary, font=self.hud_font)
+
+        # ISS indicator
+        iss_w = 45
+        iss_x = w - g - iss_w
+        iss_center_y = top_h // 2
+        dot_r = 4
+        draw.ellipse([iss_x, iss_center_y - dot_r, iss_x + dot_r * 2, iss_center_y + dot_r],
+                     fill=self.hud_color_indicator)
+        draw.text((iss_x + dot_r * 2 + 4, iss_center_y - 8), "ISS",
+                  fill=self.hud_color_primary, font=self.hud_font_sm)
+
+        # ── Bottom bar ──
+        bot_img = Image.new('RGB', (w, bot_h), self.hud_color_bg)
+        draw = ImageDraw.Draw(bot_img)
+        draw.line([0, 0, w, 0], fill=self.hud_color_border)
+
+        label_y = g
+        value_y = g * 3
+
+        # ALT cell
+        alt_x = g
+        alt_w = 85
+        draw.text((alt_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
+        alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
+        val_x = alt_x + alt_w - (alt_bbox[2] - alt_bbox[0]) - 22
+        draw.text((val_x, value_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((alt_x + alt_w - 18, value_y + 4), "km", fill=self.hud_color_dim, font=self.hud_font_sm)
+
+        # VEL cell
+        vel_x = alt_x + alt_w + g
+        vel_w = 115
+        draw.text((vel_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
+        vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
+        val_x = vel_x + vel_w - (vel_bbox[2] - vel_bbox[0]) - 32
+        draw.text((val_x, value_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((vel_x + vel_w - 28, value_y + 4), "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
+
+        # ORBIT indicator
+        orb_w = 50
+        orb_x = w - g - orb_w
+        orb_center_y = bot_h // 2
+        draw.text((orb_x, orb_center_y - 12), orb_val, fill=self.hud_color_dim, font=self.hud_font_sm)
+        draw.text((orb_x, orb_center_y + 2), "ORB/D", fill=self.hud_color_label, font=self.hud_font_lbl)
+
+        # Convert to RGB565 bytes
+        self._hud_top_bytes = self._image_to_rgb565_bytes(top_img)
+        self._hud_bottom_bytes = self._image_to_rgb565_bytes(bot_img)
+        self._hud_cache_key = cache_key
+
+        return cache_key
+
+    # ─── RGB565 conversion ────────────────────────────────────────────────
+
+    @staticmethod
+    def _image_to_rgb565_bytes(image: Image.Image) -> bytes:
         """Convert PIL Image to RGB565 bytes for direct display."""
         img_np = np.array(image)
         r = img_np[..., 0].astype(np.uint16)
         g = img_np[..., 1].astype(np.uint16)
         b = img_np[..., 2].astype(np.uint16)
         rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        rgb565_be = rgb565.astype('>u2')
-        return rgb565_be.tobytes()
+        return rgb565.astype('>u2').tobytes()
 
     def _precompute_rgb565(self):
         """Pre-compute RGB565 bytes for all cached frames."""
@@ -385,10 +424,12 @@ class LcdDisplay:
             self.frame_bytes_cache.append(self._image_to_rgb565_bytes(frame))
         logger.info(f"Pre-computed {len(self.frame_bytes_cache)} frames")
 
+    # ─── Frame cache ──────────────────────────────────────────────────────
+
     def _load_or_generate_frames(self):
         """Load pre-rendered frames from cache or generate them."""
         cache_file = self.cache_dir / "cartopy_frames_v2.npz"
-        
+
         if cache_file.exists():
             logger.info("Loading cached Earth frames...")
             try:
@@ -397,27 +438,31 @@ class LcdDisplay:
                     img_array = data[f'frame_{i}']
                     self.frame_cache.append(Image.fromarray(img_array))
                 self.frames_generated = True
+                # Update globe geometry from first frame
+                self._update_globe_geometry()
                 logger.info(f"Loaded {len(self.frame_cache)} cached frames")
                 return
             except Exception as e:
                 logger.warning(f"Failed to load cache: {e}, regenerating...")
-        
+
         self._generate_frames()
-    
+
     def _generate_frames(self):
         """Pre-render all Earth rotation frames using Cartopy."""
         logger.info(f"Generating {self.num_frames} Earth frames with Cartopy...")
-        
+
         self.frame_cache = []
         degrees_per_frame = 360 / self.num_frames
-        
+
         for i in range(self.num_frames):
-            central_lon = (i * degrees_per_frame) - 180  # Range: -180 to 180
-            logger.info(f"  Generating frame {i+1}/{self.num_frames} (lon={central_lon:.0f}°)...")
-            
+            central_lon = (i * degrees_per_frame) - 180
+            logger.info(f"  Generating frame {i+1}/{self.num_frames} (lon={central_lon:.0f}\u00b0)...")
             frame = self._render_globe_frame(central_lon)
             self.frame_cache.append(frame)
-        
+
+        # Update globe geometry from the rendered frames
+        self._update_globe_geometry()
+
         # Save to cache
         logger.info("Saving frames to cache...")
         try:
@@ -426,517 +471,247 @@ class LcdDisplay:
             logger.info("Frames cached successfully")
         except Exception as e:
             logger.warning(f"Failed to save cache: {e}")
-        
+
         self.frames_generated = True
         logger.info("Frame generation complete!")
 
+    def _update_globe_geometry(self):
+        """Compute globe center and radius from the rendered frames."""
+        if not self.frame_cache:
+            return
+        # All frames are the same size, so use the first one
+        # The globe is rendered at globe_scale of the smaller dimension
+        globe_size = int(min(self.width, self.height) * self.globe_scale)
+        self.globe_center_x = self.width // 2
+        self.globe_center_y = self.height // 2
+        self.globe_radius_px = globe_size // 2
+
     def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
         """Render a single globe frame at the given central longitude."""
-        # Create a square figure for the globe to keep it circular
-        # Use 75% of the smaller dimension to leave room for ISS orbit and padding
-        self.globe_scale = 0.70  # Globe takes 70% of available space
-        self.iss_orbit_scale = 1.10  # ISS orbits at ~10% above Earth surface (exaggerated for visibility)
-        
-        # Deep dark blue background color
-        bg_color = '#050510'  # Almost black with slight blue tint
+        bg_color = '#050510'
         bg_rgb = (5, 5, 16)
-        
+
         globe_size = int(min(self.width, self.height) * self.globe_scale)
         dpi = 100
         fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor=bg_color)
-        
-        # Create Orthographic projection centered on the given longitude
+
         projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
-        
         ax = fig.add_subplot(1, 1, 1, projection=projection)
         ax.set_facecolor(bg_color)
-        
-        # Set the global extent
         ax.set_global()
-        
-        # Add ocean (dark blue background for the globe)
+
         ax.add_feature(cfeature.OCEAN, facecolor='#001133', edgecolor='none', zorder=0)
-        
-        # Add land masses (white/light color)
         ax.add_feature(cfeature.LAND, facecolor='#FFFFFF', edgecolor='#CCCCCC', linewidth=0.5, zorder=1)
-        
-        # Add coastlines for better definition
         ax.add_feature(cfeature.COASTLINE, edgecolor='#888888', linewidth=0.5, zorder=2)
-        
-        # Add gridlines
         ax.gridlines(color='#444444', linewidth=0.3, alpha=0.5, linestyle='-')
-        
-        # Remove axis spines/border (compatible with newer Cartopy versions)
         ax.spines['geo'].set_visible(False)
-        
-        # Remove all margins
+
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        
-        # Render to image
+
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=dpi, facecolor=bg_color, edgecolor='none',
                     bbox_inches='tight', pad_inches=0)
-        buf.seek(0)
-        
-        globe_img = Image.open(buf).convert('RGB')
         plt.close(fig)
-        
-        # Create the final image at display size with deep dark blue background
+        buf.seek(0)
+
+        globe_img = Image.open(buf).convert('RGB')
+        buf.close()
+
         final_img = Image.new('RGB', (self.width, self.height), bg_rgb)
-        
-        # Center the globe on the display
         x_offset = (self.width - globe_img.width) // 2
         y_offset = (self.height - globe_img.height) // 2
         final_img.paste(globe_img, (x_offset, y_offset))
-        
-        # Store globe geometry for ISS positioning
-        self.globe_center_x = self.width // 2
-        self.globe_center_y = self.height // 2
-        self.globe_radius_px = globe_img.width // 2
-        
+
         return final_img
 
-    def update(self, lat: float, lon: float):
-        """
-        Updates the display with the current ISS position on rotating Earth.
-        Uses pre-rendered frames for smooth animation.
-        """
-        # Create a dummy telemetry object for backward compatibility
-        from iss_display.data.iss_client import ISSFix
-        telemetry = ISSFix(
-            latitude=lat, longitude=lon,
-            altitude_km=420.0, velocity_kmh=27600.0,
-            timestamp=0.0
-        )
-        self.update_with_telemetry(telemetry)
+    # ─── ISS marker (RGB565 byte-buffer operations) ──────────────────────
 
-    def update_with_telemetry(self, telemetry: "ISSFix"):
-        """
-        Updates the display with full ISS telemetry data.
-        Renders globe animation with HUD overlay showing telemetry.
-        """
-        if not self.frames_generated:
-            logger.warning("Frames not yet generated")
-            return
-        
-        lat = telemetry.latitude
-        lon = telemetry.longitude
-        
-        # Calculate the central longitude of this frame
-        central_lon = (self.current_frame * (360 / self.num_frames)) - 180
-        
-        # Check if ISS is visible on this frame
-        iss_visible = self._is_iss_visible(lat, lon, central_lon)
-        
-        # Get base frame and create composite with HUD
-        base_frame = self.frame_cache[self.current_frame].copy()
-        
-        # Draw ISS marker if visible
-        if iss_visible:
-            self._add_iss_marker_to_image(base_frame, lat, lon, central_lon)
-        
-        # Draw HUD overlay
-        self._draw_hud(base_frame, telemetry)
-        
-        # Convert and send to display
-        if self.driver:
-            pixel_bytes = self._image_to_rgb565_bytes(base_frame)
-            self.driver.display_raw(pixel_bytes)
-        
-        self.image = base_frame
-        
-        # Advance to next frame
-        self.current_frame = (self.current_frame + 1) % self.num_frames
+    def _calc_iss_screen_pos(self, lat: float, lon: float, central_lon: float):
+        """Calculate ISS screen position, visibility, and opacity.
 
-    def _draw_hud(self, image: Image.Image, telemetry: "ISSFix"):
-        """Draw clean, well-structured HUD overlay with telemetry data.
-        
-        Layout calculated for 320px width display:
-        - 8px padding on each side = 304px usable
-        - 8px gaps between elements
-        - All positions explicitly calculated to prevent overlap
-        """
-        draw = ImageDraw.Draw(image)
-        w, h = image.size  # 320 x 480
-        g = self.hud_grid  # 8px grid unit
-        
-        # ═══════════════════════════════════════════════════════════
-        # TOP BAR - Position (LAT / LON / ISS)
-        # Width budget: 320 - 16 padding = 304px usable
-        # Layout: LAT(95) + gap(8) + LON(105) + gap(8) + ISS(45) = 261px
-        # ═══════════════════════════════════════════════════════════
-        top_h = self.hud_top_height
-        
-        # Background bar
-        draw.rectangle([0, 0, w, top_h], fill=self.hud_color_bg)
-        draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
-        
-        # Format coordinates
-        lat = telemetry.latitude
-        lat_dir = "N" if lat >= 0 else "S"
-        lon = telemetry.longitude
-        lon_dir = "E" if lon >= 0 else "W"
-        
-        # Vertical positions (stacked: label on top, value below)
-        label_y = g          # 8px from top
-        value_y = g * 3      # 24px from top
-        
-        # LAT cell: x=8, width=95
-        lat_x = g
-        lat_w = 95
-        draw.text((lat_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        lat_val = f"{abs(lat):05.2f}°{lat_dir}"
-        lat_bbox = draw.textbbox((0, 0), lat_val, font=self.hud_font)
-        draw.text((lat_x + lat_w - (lat_bbox[2] - lat_bbox[0]), value_y), 
-                  lat_val, fill=self.hud_color_primary, font=self.hud_font)
-        
-        # LON cell: x=111 (95 + 8 gap + 8 padding), width=105
-        lon_x = lat_x + lat_w + g
-        lon_w = 105
-        draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
-        lon_val = f"{abs(lon):06.2f}°{lon_dir}"
-        lon_bbox = draw.textbbox((0, 0), lon_val, font=self.hud_font)
-        draw.text((lon_x + lon_w - (lon_bbox[2] - lon_bbox[0]), value_y), 
-                  lon_val, fill=self.hud_color_primary, font=self.hud_font)
-        
-        # ISS indicator: right-aligned, 45px wide
-        iss_w = 45
-        iss_x = w - g - iss_w  # 320 - 8 - 45 = 267
-        iss_center_y = top_h // 2
-        # Green dot
-        dot_r = 4
-        draw.ellipse([iss_x, iss_center_y - dot_r, iss_x + dot_r * 2, iss_center_y + dot_r], 
-                     fill=self.hud_color_indicator)
-        # "ISS" text
-        draw.text((iss_x + dot_r * 2 + 4, iss_center_y - 8), "ISS", 
-                  fill=self.hud_color_primary, font=self.hud_font_sm)
-        
-        # ═══════════════════════════════════════════════════════════
-        # BOTTOM BAR - Telemetry (ALT / VEL / ORBIT)
-        # Width budget: 320 - 16 padding = 304px usable  
-        # Layout: ALT(85) + gap(8) + VEL(115) + gap(8) + ORB(50) = 266px
-        # ═══════════════════════════════════════════════════════════
-        bot_h = self.hud_bottom_height
-        bot_y = h - bot_h
-        
-        # Background bar
-        draw.rectangle([0, bot_y, w, h], fill=self.hud_color_bg)
-        draw.line([0, bot_y, w, bot_y], fill=self.hud_color_border)
-        
-        # Vertical positions (relative to bottom bar)
-        label_y = bot_y + g
-        value_y = bot_y + g * 3
-        
-        # ALT cell: x=8, width=85
-        alt_x = g
-        alt_w = 85
-        alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
-        draw.text((alt_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        alt_val = f"{alt_km:,.0f}"
-        alt_bbox = draw.textbbox((0, 0), alt_val, font=self.hud_font)
-        # Value + unit inline
-        val_x = alt_x + alt_w - (alt_bbox[2] - alt_bbox[0]) - 22  # leave room for "km"
-        draw.text((val_x, value_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
-        draw.text((alt_x + alt_w - 18, value_y + 4), "km", fill=self.hud_color_dim, font=self.hud_font_sm)
-        
-        # VEL cell: x=101 (85 + 8 gap + 8), width=115
-        vel_x = alt_x + alt_w + g
-        vel_w = 115
-        vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
-        draw.text((vel_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
-        vel_val = f"{vel_kmh:,.0f}"
-        vel_bbox = draw.textbbox((0, 0), vel_val, font=self.hud_font)
-        # Value + unit inline
-        val_x = vel_x + vel_w - (vel_bbox[2] - vel_bbox[0]) - 32  # leave room for "km/h"
-        draw.text((val_x, value_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
-        draw.text((vel_x + vel_w - 28, value_y + 4), "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
-        
-        # ORBIT indicator: right-aligned, 50px wide
-        orb_w = 50
-        orb_x = w - g - orb_w  # 320 - 8 - 50 = 262
-        orb_center_y = bot_y + bot_h // 2
-        draw.text((orb_x, orb_center_y - 12), "~16", fill=self.hud_color_dim, font=self.hud_font_sm)
-        draw.text((orb_x, orb_center_y + 2), "ORB/D", fill=self.hud_color_label, font=self.hud_font_lbl)
-
-    def _draw_data_cell(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
-        """Draw a bordered data cell with label and value (legacy small version)."""
-        # Border
-        draw.rectangle([x, y, x + w, y + h], outline=self.hud_color_border)
-        
-        # Label (small, dimmer)
-        draw.text((x + 3, y + 1), label, fill=self.hud_color_label, font=self.hud_font_sm)
-        
-        # Value (right-aligned, brighter)
-        val_bbox = draw.textbbox((0, 0), value, font=self.hud_font_sm)
-        val_w = val_bbox[2] - val_bbox[0]
-        draw.text((x + w - val_w - 3, y + 1), value, fill=self.hud_color_primary, font=self.hud_font_sm)
-
-    def _draw_data_cell_large(self, draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, label: str, value: str):
-        """Draw a larger bordered data cell with stacked label and value."""
-        # Outer border
-        draw.rectangle([x, y, x + w, y + h], outline=self.hud_color_border)
-        
-        # Inner subtle highlight line at top
-        draw.line([x + 1, y + 1, x + w - 1, y + 1], fill=(40, 35, 10))
-        
-        # Label (top, smaller, dimmer)
-        label_font = getattr(self, 'hud_font_lbl', self.hud_font_sm)
-        draw.text((x + 5, y + 3), label, fill=self.hud_color_label, font=label_font)
-        
-        # Value (bottom, larger, brighter) - right-aligned
-        val_bbox = draw.textbbox((0, 0), value, font=self.hud_font_sm)
-        val_w = val_bbox[2] - val_bbox[0]
-        val_h = val_bbox[3] - val_bbox[1]
-        val_y = y + h - val_h - 4
-        draw.text((x + w - val_w - 5, val_y), value, fill=self.hud_color_primary, font=self.hud_font_sm)
-
-    def _add_iss_marker_to_image(self, image: Image.Image, lat: float, lon: float, central_lon: float):
-        """Draw ISS marker on a PIL Image with realistic Earth occlusion.
-        
-        The ISS orbits at ~1.10x Earth radius (exaggerated for visibility).
-        When the ISS goes behind the Earth, it should be occluded by the planet.
-        Near the limb, we fade the marker to simulate it going behind.
+        Returns (px, py, opacity) or None if ISS is not visible.
         """
         lat_rad = math.radians(lat)
         lon_rad = math.radians(lon)
         central_lon_rad = math.radians(central_lon)
-        
-        # cos_c = cosine of angle between view vector and ISS position
-        # cos_c = 1: directly facing us, cos_c = 0: at limb, cos_c = -1: directly behind
+
         cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
-        
-        # Calculate the point on Earth's surface directly below ISS
-        x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
-        y_surface = math.sin(lat_rad)
-        
-        # ISS altitude factor (how far above Earth surface)
-        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
-        
-        # ISS position in normalized coordinates
-        x_iss = x_surface * iss_altitude_factor
-        y_iss = y_surface * iss_altitude_factor
-        
-        # Calculate if ISS is behind the Earth's visible disk
-        # The ISS is behind if its ground track is on the back side AND
-        # it's not high enough to peek over the limb
-        
-        # For a sphere of radius 1.0, a satellite at radius R is visible when:
-        # cos_c > -sqrt(1 - 1/R^2)  (geometric horizon)
-        # For R=1.10: threshold = -sqrt(1 - 1/1.21) = -sqrt(0.174) ≈ -0.417
-        horizon_threshold = -math.sqrt(1 - 1 / (iss_altitude_factor ** 2))
-        
+
+        horizon_threshold = -math.sqrt(1 - 1 / (self.iss_orbit_scale ** 2))
+
         if cos_c < horizon_threshold:
-            # ISS is completely behind Earth - don't draw
-            return
-        
-        # Calculate opacity for limb transition
-        # Fade from full opacity at cos_c=0.1 to zero at horizon_threshold
-        fade_start = 0.05  # Start fading just before the limb
+            return None
+
+        # Opacity for limb transition
+        fade_start = 0.05
         if cos_c < fade_start:
-            # Normalize to 0-1 range: 1 at fade_start, 0 at horizon_threshold
             opacity = (cos_c - horizon_threshold) / (fade_start - horizon_threshold)
             opacity = max(0.0, min(1.0, opacity))
         else:
             opacity = 1.0
-        
-        # Get globe center and radius
-        cx = getattr(self, 'globe_center_x', self.width // 2)
-        cy = getattr(self, 'globe_center_y', self.height // 2)
-        globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
-        
-        # Screen position
-        px = int(cx + x_iss * globe_radius)
-        py = int(cy - y_iss * globe_radius)
-        
-        if 0 <= px < self.width and 0 <= py < self.height:
-            draw = ImageDraw.Draw(image)
-            
-            # Check if marker position is inside the Earth disk (would be occluded)
-            dist_from_center = math.sqrt((px - cx)**2 + (py - cy)**2)
-            
-            if dist_from_center < globe_radius and cos_c < 0:
-                # ISS screen position is inside Earth disk AND it's on back side
-                # This means it's being occluded - reduce opacity further
-                occlusion = 1.0 - (globe_radius - dist_from_center) / globe_radius
-                opacity *= occlusion * 0.3  # Heavily reduce when inside disk
-            
-            if opacity < 0.05:
-                return  # Too faint to bother drawing
-            
-            # Scale marker size with opacity for "distance" effect
-            size_scale = 0.6 + 0.4 * opacity  # 60% to 100% size
-            
-            # Draw marker with opacity
-            # Glow effect (outer rings)
-            for i in range(3):
-                r = int((7 - i * 2) * size_scale)
-                if r < 1:
-                    continue
-                base_brightness = int((50 + i * 40) * opacity)
-                glow_color = (int(255 * opacity), base_brightness, base_brightness)
-                draw.ellipse([px-r, py-r, px+r, py+r], fill=glow_color)
-            
-            # Red core
-            core_r = max(1, int(3 * size_scale))
-            core_color = (int(255 * opacity), 0, 0)
-            draw.ellipse([px-core_r, py-core_r, px+core_r, py+core_r], fill=core_color)
-            
-            # White center dot
-            if opacity > 0.5:
-                center_brightness = int(255 * opacity)
-                draw.ellipse([px-1, py-1, px+1, py+1], fill=(center_brightness, center_brightness, center_brightness))
 
-    def _is_iss_visible(self, lat: float, lon: float, central_lon: float) -> bool:
-        """Check if ISS is at least partially visible from current view angle.
-        
-        Returns True if ISS should be drawn (even if partially occluded).
-        The actual occlusion/fading is handled in _add_iss_marker_to_image.
-        """
-        lat_rad = math.radians(lat)
-        lon_rad = math.radians(lon)
-        central_lon_rad = math.radians(central_lon)
-        
-        # cos(c) determines if point is on visible hemisphere
-        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
-        
-        # ISS altitude factor
-        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
-        
-        # Geometric horizon for satellite at this altitude
-        # ISS can peek over the limb - visible until cos_c < horizon_threshold
-        horizon_threshold = -math.sqrt(1 - 1 / (iss_altitude_factor ** 2))
-        
-        return cos_c > horizon_threshold
-
-    def _add_iss_marker(self, image: Image.Image, lat: float, lon: float, central_lon: float):
-        """Draw ISS marker at correct orbital altitude above Earth's surface."""
-        from PIL import ImageDraw
-        import math
-        
-        lat_rad = math.radians(lat)
-        lon_rad = math.radians(lon)
-        central_lon_rad = math.radians(central_lon)
-        central_lat_rad = 0  # We're viewing from equator
-        
-        # Check if ISS is on visible hemisphere
-        # cos(c) = sin(central_lat) * sin(lat) + cos(central_lat) * cos(lat) * cos(lon - central_lon)
-        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
-        
-        if cos_c < 0:
-            # ISS is on far side of Earth - don't draw
-            return
-        
-        # Orthographic projection for a point on Earth's surface
-        # x = cos(lat) * sin(lon - central_lon)
-        # y = sin(lat)  (for central_lat = 0)
+        # Surface point in orthographic projection
         x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
         y_surface = math.sin(lat_rad)
-        
-        # ISS orbital altitude factor
-        # Real ISS orbits at ~420km, Earth radius ~6371km, so altitude ratio ~0.066
-        # We exaggerate this to ~10% for visibility on the small display
-        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
-        
-        # The ISS position is radially outward from Earth center through the surface point
-        # For orthographic projection, we scale the surface coordinates
-        x_iss = x_surface * iss_altitude_factor
-        y_iss = y_surface * iss_altitude_factor
-        
-        # Convert to pixel coordinates using stored globe geometry
-        cx = getattr(self, 'globe_center_x', self.width // 2)
-        cy = getattr(self, 'globe_center_y', self.height // 2)
-        globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
-        
-        px = int(cx + x_iss * globe_radius)
-        py = int(cy - y_iss * globe_radius)  # Flip Y for image coordinates
-        
-        # Check bounds
-        if 0 <= px < self.width and 0 <= py < self.height:
-            draw = ImageDraw.Draw(image)
-            
-            # Draw orbital path arc (subtle)
-            # This shows a portion of the orbit as a thin arc
-            orbit_radius = int(globe_radius * iss_altitude_factor)
-            arc_color = (100, 40, 40)  # Dim red
-            draw.arc([cx - orbit_radius, cy - orbit_radius, 
-                      cx + orbit_radius, cy + orbit_radius],
-                     start=0, end=360, fill=arc_color, width=1)
-            
-            # Draw ISS marker with glow
-            # Outer glow
-            for i in range(3):
-                r = 8 - i * 2
-                alpha = 180 - i * 50
-                glow_color = (255, int(50 + i * 40), int(50 + i * 40))
-                draw.ellipse([px-r, py-r, px+r, py+r], fill=glow_color)
-            
-            # Solid red core
-            r_marker = 4
-            draw.ellipse([px-r_marker, py-r_marker, px+r_marker, py+r_marker], fill=(255, 0, 0))
-            
-            # White center dot
-            r_center = 1
-            draw.ellipse([px-r_center, py-r_center, px+r_center, py+r_center], fill=(255, 255, 255))
 
-    def _add_iss_marker_fast(self, base_frame: Image.Image, lat: float, lon: float, central_lon: float):
-        """
-        Fast path: draw ISS marker directly into RGB565 bytes and send to display.
-        Avoids full image copy and conversion.
-        """
-        import math
-        
-        # Get base frame bytes
-        frame_bytes = bytearray(self.frame_bytes_cache[self.current_frame])
-        
-        lat_rad = math.radians(lat)
-        lon_rad = math.radians(lon)
-        central_lon_rad = math.radians(central_lon)
-        
-        cos_c = math.cos(lat_rad) * math.cos(lon_rad - central_lon_rad)
+        # ISS position (exaggerated altitude)
+        x_iss = x_surface * self.iss_orbit_scale
+        y_iss = y_surface * self.iss_orbit_scale
+
+        px = int(self.globe_center_x + x_iss * self.globe_radius_px)
+        py = int(self.globe_center_y - y_iss * self.globe_radius_px)
+
+        if not (0 <= px < self.width and 0 <= py < self.height):
+            return None
+
+        # Check occlusion when marker is inside Earth disk on back side
         if cos_c < 0:
-            # ISS on far side - just send base frame
-            self.driver.display_raw(bytes(frame_bytes))
+            dist = math.sqrt((px - self.globe_center_x)**2 + (py - self.globe_center_y)**2)
+            if dist < self.globe_radius_px:
+                occlusion = 1.0 - (self.globe_radius_px - dist) / self.globe_radius_px
+                opacity *= occlusion * 0.3
+
+        if opacity < 0.05:
+            return None
+
+        return (px, py, opacity)
+
+    def _draw_iss_marker_rgb565(self, frame_buf: bytearray, px: int, py: int, opacity: float):
+        """Draw ISS marker directly into an RGB565 byte buffer.
+
+        Draws concentric glow rings + core + center dot using direct byte writes.
+        """
+        size_scale = 0.6 + 0.4 * opacity
+        w = self.width
+
+        # Pre-compute marker pixel colors at varying radii
+        # Glow rings (outer to inner)
+        rings = []
+        for i in range(3):
+            r = int((7 - i * 2) * size_scale)
+            if r < 1:
+                continue
+            base_brightness = int((50 + i * 40) * opacity)
+            color = _rgb_to_rgb565(int(255 * opacity), base_brightness, base_brightness)
+            rings.append((r * r, color))
+
+        core_r = max(1, int(3 * size_scale))
+        core_color = _rgb_to_rgb565(int(255 * opacity), 0, 0)
+
+        show_center = opacity > 0.5
+        center_b = int(255 * opacity)
+        center_color = _rgb_to_rgb565(center_b, center_b, center_b)
+
+        # Determine bounding box for the marker
+        max_r = int(7 * size_scale) + 1
+        y_start = max(0, py - max_r)
+        y_end = min(self.height - 1, py + max_r)
+        x_start = max(0, px - max_r)
+        x_end = min(self.width - 1, px + max_r)
+
+        for my in range(y_start, y_end + 1):
+            dy = my - py
+            row_offset = my * w * 2
+            for mx in range(x_start, x_end + 1):
+                dx = mx - px
+                dist_sq = dx * dx + dy * dy
+
+                color = None
+
+                # Center dot (radius 1)
+                if show_center and dist_sq <= 1:
+                    color = center_color
+                # Core (radius core_r)
+                elif dist_sq <= core_r * core_r:
+                    color = core_color
+                else:
+                    # Check glow rings (outer to inner — outer drawn first, inner overwrites)
+                    for ring_r_sq, ring_color in rings:
+                        if dist_sq <= ring_r_sq:
+                            color = ring_color
+                            break
+
+                if color is not None:
+                    offset = row_offset + mx * 2
+                    frame_buf[offset] = (color >> 8) & 0xFF
+                    frame_buf[offset + 1] = color & 0xFF
+
+    def _patch_hud_bytes(self, frame_buf: bytearray):
+        """Patch cached HUD bar bytes into a frame buffer."""
+        if self._hud_top_bytes is None or self._hud_bottom_bytes is None:
             return
-        
-        x_surface = math.cos(lat_rad) * math.sin(lon_rad - central_lon_rad)
-        y_surface = math.sin(lat_rad)
-        
-        iss_altitude_factor = getattr(self, 'iss_orbit_scale', 1.10)
-        x_iss = x_surface * iss_altitude_factor
-        y_iss = y_surface * iss_altitude_factor
-        
-        cx = getattr(self, 'globe_center_x', self.width // 2)
-        cy = getattr(self, 'globe_center_y', self.height // 2)
-        globe_radius = getattr(self, 'globe_radius_px', min(self.width, self.height) * 0.35)
-        
-        px = int(cx + x_iss * globe_radius)
-        py = int(cy - y_iss * globe_radius)
-        
-        # Draw a simple bright red marker (5x5 pixels) directly into RGB565 bytes
-        # RGB565 for pure red (255, 0, 0): 0xF800
-        red_high = 0xF8
-        red_low = 0x00
-        # White center: 0xFFFF
-        white_high = 0xFF
-        white_low = 0xFF
-        
-        marker_radius = 3
-        for dy in range(-marker_radius, marker_radius + 1):
-            for dx in range(-marker_radius, marker_radius + 1):
-                mx, my = px + dx, py + dy
-                if 0 <= mx < self.width and 0 <= my < self.height:
-                    dist_sq = dx * dx + dy * dy
-                    # Byte offset: 2 bytes per pixel, row-major
-                    offset = (my * self.width + mx) * 2
-                    
-                    if dist_sq <= 1:  # Center pixel - white
-                        frame_bytes[offset] = white_high
-                        frame_bytes[offset + 1] = white_low
-                    elif dist_sq <= marker_radius * marker_radius:  # Red circle
-                        frame_bytes[offset] = red_high
-                        frame_bytes[offset + 1] = red_low
-        
-        self.driver.display_raw(bytes(frame_bytes))
+
+        top_size = self.width * self.hud_top_height * 2
+        bot_size = self.width * self.hud_bottom_height * 2
+        bot_offset = (self.height - self.hud_bottom_height) * self.width * 2
+
+        # Top bar: rows 0..top_height
+        frame_buf[0:top_size] = self._hud_top_bytes
+
+        # Bottom bar: rows (height - bot_height)..height
+        frame_buf[bot_offset:bot_offset + bot_size] = self._hud_bottom_bytes
+
+    # ─── Main update loop entry point ─────────────────────────────────────
+
+    def update_with_telemetry(self, telemetry: "ISSFix"):
+        """Update the display with current ISS telemetry.
+
+        Optimized pipeline:
+        1. Copy pre-computed RGB565 bytes for current globe frame
+        2. Draw ISS marker directly into byte buffer (small area)
+        3. Patch cached HUD bars into byte buffer (memcpy)
+        4. Send to display
+        """
+        if not self.frames_generated:
+            logger.warning("Frames not yet generated")
+            return
+
+        # Ensure HUD bars are rendered (only redraws when values change)
+        self._render_hud_bars(telemetry)
+
+        # Start with pre-computed RGB565 bytes for this globe frame
+        frame_buf = bytearray(self.frame_bytes_cache[self.current_frame])
+
+        # Calculate ISS screen position for this frame's view angle
+        central_lon = (self.current_frame * (360 / self.num_frames)) - 180
+        iss_pos = self._calc_iss_screen_pos(telemetry.latitude, telemetry.longitude, central_lon)
+
+        # Draw ISS marker directly into byte buffer
+        if iss_pos is not None:
+            px, py, opacity = iss_pos
+            self._draw_iss_marker_rgb565(frame_buf, px, py, opacity)
+
+        # Patch HUD bars into byte buffer
+        self._patch_hud_bytes(frame_buf)
+
+        # Send to display
+        pixel_bytes = bytes(frame_buf)
+        if self.driver:
+            self.driver.display_raw(pixel_bytes)
+
+        # Preview mode: save occasional PNGs
+        if self.driver is None:
+            self._preview_frame_count += 1
+            if self._preview_frame_count % 30 == 1:
+                self._save_preview(pixel_bytes)
+
+        # Advance globe rotation
+        self.current_frame = (self.current_frame + 1) % self.num_frames
+
+    def _save_preview(self, pixel_bytes: bytes):
+        """Save an RGB565 frame buffer as a PNG preview image."""
+        try:
+            arr = np.frombuffer(pixel_bytes, dtype='>u2').reshape(self.height, self.width)
+            r = ((arr >> 11) & 0x1F).astype(np.uint8) * 8
+            g = ((arr >> 5) & 0x3F).astype(np.uint8) * 4
+            b = (arr & 0x1F).astype(np.uint8) * 8
+            rgb = np.stack([r, g, b], axis=-1)
+            img = Image.fromarray(rgb)
+            preview_path = self.settings.preview_dir / f"frame_{self._preview_frame_count:06d}.png"
+            img.save(preview_path)
+            logger.debug(f"Preview saved: {preview_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save preview: {e}")
 
     def close(self):
         if self.driver:
