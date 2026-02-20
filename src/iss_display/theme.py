@@ -18,6 +18,11 @@ from typing import Tuple
 RGB = Tuple[int, int, int]
 
 
+def rgb_to_hex(color: RGB) -> str:
+    """Convert an (R, G, B) tuple to a '#RRGGBB' hex string."""
+    return f'#{color[0]:02x}{color[1]:02x}{color[2]:02x}'
+
+
 # ── Globe ─────────────────────────────────────────────────────────────────
 
 
@@ -28,20 +33,18 @@ class GlobeStyle:
     # Globe sizing
     scale: float = 0.70                    # Globe diameter as fraction of display short edge
     iss_orbit_scale: float = 1.10          # ISS altitude exaggeration (1.0 = on surface)
-    num_frames: int = 72                   # Rotation frames (higher = smoother, more RAM/startup)
+    num_frames: int = 144                  # Rotation frames (higher = smoother, more RAM/startup)
+    rotation_period_sec: float = 10.0      # Seconds for one full rotation (independent of num_frames)
 
-    # Background (hex for matplotlib, RGB tuple for PIL — must match)
-    background_hex: str = '#050510'
-    background_rgb: RGB = (5, 5, 16)
-
-    # Earth features
-    ocean_color: str = '#001133'
-    land_color: str = '#FFFFFF'
-    land_border_color: str = '#CCCCCC'
+    # Colors (all RGB)
+    background: RGB = (5, 5, 16)
+    ocean_color: RGB = (0, 17, 51)
+    land_color: RGB = (255, 255, 255)
+    land_border_color: RGB = (204, 204, 204)
     land_border_width: float = 0.5
-    coastline_color: str = '#888888'
+    coastline_color: RGB = (136, 136, 136)
     coastline_width: float = 0.5
-    grid_color: str = '#444444'
+    grid_color: RGB = (68, 68, 68)
     grid_width: float = 0.3
     grid_alpha: float = 0.5
 

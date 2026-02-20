@@ -29,7 +29,7 @@ except ImportError:
     HARDWARE_AVAILABLE = False
 
 from iss_display.config import Settings
-from iss_display.theme import THEME
+from iss_display.theme import THEME, rgb_to_hex
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +229,11 @@ class LcdDisplay:
         self.frame_cache: List[Image.Image] = []
         self.frame_bytes_cache: List[bytes] = []
         self.num_frames = THEME.globe.num_frames
-        self.current_frame = 0
         self.frames_generated = False
+
+        # Time-based rotation (decouples speed from frame count)
+        self._rotation_start_time: float = time.time()
+        self._rotation_period: float = THEME.globe.rotation_period_sec
 
         # Cache directory
         self.cache_dir = self.settings.preview_dir.parent / "frame_cache"
@@ -423,7 +426,7 @@ class LcdDisplay:
 
     def _load_or_generate_frames(self):
         """Load pre-rendered frames from cache or generate them."""
-        cache_file = self.cache_dir / "cartopy_frames_v2.npz"
+        cache_file = self.cache_dir / f"globe_{self.num_frames}f.npz"
 
         if cache_file.exists():
             logger.info("Loading cached Earth frames...")
@@ -462,7 +465,7 @@ class LcdDisplay:
         logger.info("Saving frames to cache...")
         try:
             frame_dict = {f'frame_{i}': np.array(frame) for i, frame in enumerate(self.frame_cache)}
-            np.savez_compressed(self.cache_dir / "cartopy_frames_v2.npz", **frame_dict)
+            np.savez_compressed(self.cache_dir / f"globe_{self.num_frames}f.npz", **frame_dict)
             logger.info("Frames cached successfully")
         except Exception as e:
             logger.warning(f"Failed to save cache: {e}")
@@ -484,30 +487,31 @@ class LcdDisplay:
     def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
         """Render a single globe frame at the given central longitude."""
         g = THEME.globe
-        bg_color = g.background_hex
-        bg_rgb = g.background_rgb
+        bg_hex = rgb_to_hex(g.background)
 
         globe_size = int(min(self.width, self.height) * self.globe_scale)
         dpi = 100
-        fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor=bg_color)
+        fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor=bg_hex)
 
         projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
         ax = fig.add_subplot(1, 1, 1, projection=projection)
-        ax.set_facecolor(bg_color)
+        ax.set_facecolor(bg_hex)
         ax.set_global()
 
-        ax.add_feature(cfeature.OCEAN, facecolor=g.ocean_color, edgecolor='none', zorder=0)
-        ax.add_feature(cfeature.LAND, facecolor=g.land_color, edgecolor=g.land_border_color,
+        ax.add_feature(cfeature.OCEAN, facecolor=rgb_to_hex(g.ocean_color), edgecolor='none', zorder=0)
+        ax.add_feature(cfeature.LAND, facecolor=rgb_to_hex(g.land_color),
+                        edgecolor=rgb_to_hex(g.land_border_color),
                         linewidth=g.land_border_width, zorder=1)
-        ax.add_feature(cfeature.COASTLINE, edgecolor=g.coastline_color,
+        ax.add_feature(cfeature.COASTLINE, edgecolor=rgb_to_hex(g.coastline_color),
                         linewidth=g.coastline_width, zorder=2)
-        ax.gridlines(color=g.grid_color, linewidth=g.grid_width, alpha=g.grid_alpha, linestyle='-')
+        ax.gridlines(color=rgb_to_hex(g.grid_color), linewidth=g.grid_width,
+                      alpha=g.grid_alpha, linestyle='-')
         ax.spines['geo'].set_visible(False)
 
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=dpi, facecolor=bg_color, edgecolor='none',
+        fig.savefig(buf, format='png', dpi=dpi, facecolor=bg_hex, edgecolor='none',
                     bbox_inches='tight', pad_inches=0)
         plt.close(fig)
         buf.seek(0)
@@ -515,7 +519,7 @@ class LcdDisplay:
         globe_img = Image.open(buf).convert('RGB')
         buf.close()
 
-        final_img = Image.new('RGB', (self.width, self.height), bg_rgb)
+        final_img = Image.new('RGB', (self.width, self.height), g.background)
         x_offset = (self.width - globe_img.width) // 2
         y_offset = (self.height - globe_img.height) // 2
         final_img.paste(globe_img, (x_offset, y_offset))
@@ -669,11 +673,16 @@ class LcdDisplay:
         # Ensure HUD bars are rendered (only redraws when values change)
         self._render_hud_bars(telemetry)
 
+        # Select globe frame based on elapsed time (decouples speed from frame count)
+        elapsed = time.time() - self._rotation_start_time
+        rotation_progress = (elapsed % self._rotation_period) / self._rotation_period
+        current_frame = int(rotation_progress * self.num_frames) % self.num_frames
+
         # Start with pre-computed RGB565 bytes for this globe frame
-        frame_buf = bytearray(self.frame_bytes_cache[self.current_frame])
+        frame_buf = bytearray(self.frame_bytes_cache[current_frame])
 
         # Calculate ISS screen position for this frame's view angle
-        central_lon = (self.current_frame * (360 / self.num_frames)) - 180
+        central_lon = (current_frame * (360 / self.num_frames)) - 180
         iss_pos = self._calc_iss_screen_pos(telemetry.latitude, telemetry.longitude, central_lon)
 
         # Draw ISS marker directly into byte buffer
@@ -694,9 +703,6 @@ class LcdDisplay:
             self._preview_frame_count += 1
             if self._preview_frame_count % 30 == 1:
                 self._save_preview(pixel_bytes)
-
-        # Advance globe rotation
-        self.current_frame = (self.current_frame + 1) % self.num_frames
 
     def _save_preview(self, pixel_bytes: bytes):
         """Save an RGB565 frame buffer as a PNG preview image."""
