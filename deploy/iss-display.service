@@ -4,14 +4,35 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
 WorkingDirectory=%h/iss-tracker
 ExecStart=%h/iss-tracker/.venv/bin/python -m iss_display.app.main
 EnvironmentFile=%h/iss-tracker/.env
+
+# Watchdog: systemd kills and restarts service if no ping within this window
+WatchdogSec=60s
+
+# Restart policy
 Restart=always
 RestartSec=5
+RestartMaxDelaySec=60
+
+# Restart limits: after 5 failures in 5 minutes, reboot the system
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Resource limits
+MemoryMax=250M
+MemoryHigh=200M
+
+# Graceful shutdown
+TimeoutStopSec=10
+KillSignal=SIGTERM
+
+# Logging
 StandardOutput=journal
 StandardError=journal
+SyslogIdentifier=iss-display
 
 [Install]
 WantedBy=default.target

@@ -1,25 +1,15 @@
 import logging
 import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Union, TYPE_CHECKING
-import io
+from typing import Optional, List, Tuple, Union, TYPE_CHECKING
 
 from PIL import Image, ImageDraw, ImageFont
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import numpy as np
 
 if TYPE_CHECKING:
     from iss_display.data.iss_client import ISSFix
-
-try:
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    CARTOPY_AVAILABLE = True
-except ImportError:
-    CARTOPY_AVAILABLE = False
 
 try:
     import spidev
@@ -30,7 +20,7 @@ except ImportError:
 
 from iss_display.config import Settings
 from iss_display.data.geography import get_common_area_name
-from iss_display.theme import THEME, rgb_to_hex
+from iss_display.theme import THEME, rgb_to_hex, resolve_text_style, resolve_border_color
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +37,32 @@ RASET   = 0x2B
 RAMWR   = 0x2C
 MADCTL  = 0x36
 COLMOD  = 0x3A
+RDDST   = 0x09
+
+# Recovery constants
+_MAX_RECOVERY_ATTEMPTS = 3
+_LIGHT_REINIT_INTERVAL_SEC = 15 * 60    # 15 minutes
+_FULL_REINIT_INTERVAL_SEC = 60 * 60     # 60 minutes
+_HEALTH_CHECK_INTERVAL_SEC = 60         # 1 minute
+
+RGB = Tuple[int, int, int]
+
+
+@dataclass
+class _ResolvedText:
+    """Fully resolved text style with loaded PIL font."""
+    color: RGB
+    font: ImageFont.FreeTypeFont
+
+
+@dataclass
+class _ResolvedElement:
+    """Pre-resolved rendering parameters for one HUD element."""
+    label: _ResolvedText
+    value: _ResolvedText
+    unit: Optional[_ResolvedText]          # None for elements with no unit (OVER)
+    cell_width: Optional[int]              # None = right-aligned element
+    unit_baseline_offset: int = 0          # offset to align unit baseline with value
 
 
 def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
@@ -65,6 +81,14 @@ class ST7796S:
         self.rst = settings.gpio_rst
         self.bl = settings.gpio_bl
 
+        self._consecutive_failures = 0
+        self._frame_count = 0
+        self._last_light_reinit = time.monotonic()
+        self._last_full_reinit = time.monotonic()
+        self._last_health_check = time.monotonic()
+        self._health_check_supported = True  # disabled if readback returns all zeros
+        self._health_check_zero_count = 0
+
         self._init_gpio()
         self._init_spi()
         self._init_display()
@@ -82,14 +106,17 @@ class ST7796S:
         self.spi.open(self.settings.spi_bus, self.settings.spi_device)
         self.spi.max_speed_hz = self.settings.spi_speed_hz
         self.spi.mode = 0b00
+        logger.info(f"SPI initialized: bus={self.settings.spi_bus}, "
+                     f"device={self.settings.spi_device}, "
+                     f"speed={self.settings.spi_speed_hz / 1_000_000:.1f} MHz")
 
     def _reset(self):
         GPIO.output(self.rst, GPIO.HIGH)
-        time.sleep(0.01)
+        time.sleep(0.02)
         GPIO.output(self.rst, GPIO.LOW)
-        time.sleep(0.01)
+        time.sleep(0.02)
         GPIO.output(self.rst, GPIO.HIGH)
-        time.sleep(0.12)
+        time.sleep(0.20)
 
     def command(self, cmd: int):
         GPIO.output(self.dc, GPIO.LOW)
@@ -128,6 +155,133 @@ class ST7796S:
         self.set_window(0, 0, self.width - 1, self.height - 1)
         self._fill(0x0000)
 
+        now = time.monotonic()
+        self._last_light_reinit = now
+        self._last_full_reinit = now
+        self._last_health_check = now
+        self._consecutive_failures = 0
+        logger.info("Display initialized")
+
+    def _light_reinit(self):
+        """Lightweight re-init: reaffirm controller state without hardware reset."""
+        try:
+            self.command(SLPOUT)
+            time.sleep(0.15)
+            self.command(COLMOD)
+            self.data(0x55)
+            self.command(MADCTL)
+            self.data(0x48)
+            self.command(INVON)
+            self.command(NORON)
+            time.sleep(0.01)
+            self.command(DISPON)
+            time.sleep(0.01)
+            self.set_window(0, 0, self.width - 1, self.height - 1)
+            self._last_light_reinit = time.monotonic()
+            logger.info("Display light re-init complete")
+        except Exception as e:
+            logger.warning(f"Light re-init failed: {e}")
+            self._recover()
+
+    def _full_reinit(self):
+        """Full re-init with hardware reset — recovers from any controller state."""
+        try:
+            self._init_display()
+            self._last_full_reinit = time.monotonic()
+            logger.info("Display full re-init complete")
+        except Exception as e:
+            logger.error(f"Full re-init failed: {e}")
+            self._recover()
+
+    def _check_health(self) -> bool:
+        """Read display status register to verify controller state.
+
+        Returns True if healthy, False if re-init is needed.
+        Some LCD modules don't support SPI readback (MISO not functional or
+        protocol incompatible). If we get all-zero responses 3 times in a row,
+        we disable readback and rely solely on periodic re-init.
+        """
+        if not self._health_check_supported:
+            self._last_health_check = time.monotonic()
+            return True
+
+        try:
+            self.command(RDDST)
+            GPIO.output(self.dc, GPIO.HIGH)
+            # Read 5 bytes: 1 dummy + 4 status bytes
+            status = self.spi.xfer2([0x00] * 5)
+            self._last_health_check = time.monotonic()
+
+            # Detect non-functional readback: all zeros means the module
+            # doesn't support SPI reads (common on many cheap SPI LCD boards)
+            if all(b == 0 for b in status):
+                self._health_check_zero_count += 1
+                if self._health_check_zero_count >= 3:
+                    logger.debug("Display status readback returns all zeros — "
+                                 "disabling RDDST health checks, relying on periodic re-init")
+                    self._health_check_supported = False
+                return True  # assume healthy since display was working
+
+            # Got real data — reset zero counter
+            self._health_check_zero_count = 0
+
+            # Status byte 1 (index 1): bit 2 = display on, bit 4 = normal mode
+            st1 = status[1]
+            display_on = bool(st1 & 0x04)
+            normal_mode = bool(st1 & 0x10)
+
+            if not display_on or not normal_mode:
+                logger.warning(f"Display health check failed: status={[hex(b) for b in status]}, "
+                               f"display_on={display_on}, normal_mode={normal_mode}")
+                return False
+
+            logger.debug(f"Display health OK: status={[hex(b) for b in status]}")
+            return True
+        except Exception as e:
+            logger.warning(f"Display health check read failed: {e}")
+            return False
+
+    def _periodic_maintenance(self):
+        """Run periodic health checks and re-initialization."""
+        now = time.monotonic()
+
+        # Health check every 60 seconds
+        if now - self._last_health_check >= _HEALTH_CHECK_INTERVAL_SEC:
+            if not self._check_health():
+                logger.warning("Health check triggered re-init")
+                self._full_reinit()
+                return
+
+        # Full re-init every 60 minutes
+        if now - self._last_full_reinit >= _FULL_REINIT_INTERVAL_SEC:
+            self._full_reinit()
+            return
+
+        # Light re-init every 15 minutes
+        if now - self._last_light_reinit >= _LIGHT_REINIT_INTERVAL_SEC:
+            self._light_reinit()
+
+    def _recover(self):
+        """Attempt to recover SPI bus and display from a failed state."""
+        logger.warning(f"Attempting SPI/display recovery (failures: {self._consecutive_failures})...")
+        try:
+            self.spi.close()
+        except Exception:
+            pass
+
+        time.sleep(0.1)
+
+        try:
+            self._init_spi()
+            if self._consecutive_failures >= _MAX_RECOVERY_ATTEMPTS:
+                logger.warning("Multiple failures, performing hardware reset")
+                self._reset()
+                time.sleep(0.2)
+            self._init_display()
+            logger.info("SPI/display recovery successful")
+        except Exception as e:
+            logger.error(f"Recovery failed: {e}")
+
     def _fill(self, color: int):
         """Fill the entire screen with a solid color (RGB565)."""
         self.set_window(0, 0, self.width - 1, self.height - 1)
@@ -153,42 +307,74 @@ class ST7796S:
         self.command(RAMWR)
 
     def display_raw(self, pixel_bytes: Union[bytes, bytearray]):
-        """Display pre-converted RGB565 data directly."""
-        self.command(RAMWR)
-        GPIO.output(self.dc, GPIO.HIGH)
-        self.spi.writebytes2(pixel_bytes)
+        """Display pre-converted RGB565 data directly, with error recovery."""
+        try:
+            self.command(RAMWR)
+            GPIO.output(self.dc, GPIO.HIGH)
+            self.spi.writebytes2(pixel_bytes)
+            self._consecutive_failures = 0
+            self._frame_count += 1
+
+            # Periodic maintenance every ~900 frames (~60s at 15fps)
+            if self._frame_count % 900 == 0:
+                self._periodic_maintenance()
+        except Exception as e:
+            self._consecutive_failures += 1
+            logger.error(f"SPI write failed ({self._consecutive_failures}x): {e}")
+            self._recover()
 
     def close(self):
-        """Properly shut down the display."""
+        """Properly shut down the display with robust error handling."""
+        # Backlight off first — immediate visual feedback
         try:
             GPIO.output(self.bl, GPIO.LOW)
+        except Exception:
+            pass
 
+        # Clear screen (single fill, IPS panels don't ghost)
+        try:
             black_screen = bytes(self.width * self.height * 2)
-            for _ in range(3):
-                self.set_window(0, 0, self.width - 1, self.height - 1)
-                self.command(RAMWR)
-                GPIO.output(self.dc, GPIO.HIGH)
-                self.spi.writebytes2(black_screen)
-                time.sleep(0.05)
+            self.set_window(0, 0, self.width - 1, self.height - 1)
+            self.command(RAMWR)
+            GPIO.output(self.dc, GPIO.HIGH)
+            self.spi.writebytes2(black_screen)
+            time.sleep(0.05)
+        except Exception as e:
+            logger.debug(f"Screen clear during shutdown failed: {e}")
 
+        # Display off command
+        try:
             self.command(DISPOFF)
             time.sleep(0.05)
+        except Exception:
+            pass
 
+        # Sleep mode
+        try:
             self.command(SLPIN)
             time.sleep(0.12)
+        except Exception:
+            pass
 
+        # Hardware reset — guarantees known state for next startup
+        try:
             GPIO.output(self.rst, GPIO.LOW)
-            GPIO.output(self.bl, GPIO.LOW)
+            time.sleep(0.05)
+        except Exception:
+            pass
 
-            logger.info("Display turned off and cleared")
-        except Exception as e:
-            logger.warning(f"Error during display shutdown: {e}")
-        finally:
-            try:
-                self.spi.close()
-            except Exception:
-                pass
+        # Release hardware resources
+        try:
+            self.spi.close()
+        except Exception:
+            pass
+
+        try:
             GPIO.cleanup()
+        except Exception:
+            pass
+
+        logger.info("Display shut down cleanly")
 
 
 class LcdDisplay:
@@ -211,9 +397,6 @@ class LcdDisplay:
                 logger.warning("Hardware libraries not found. Running in preview mode.")
             else:
                 logger.info("Running in preview-only mode")
-
-        if not CARTOPY_AVAILABLE:
-            raise ImportError("Cartopy is required for rendering the globe")
 
         # Globe geometry (computed once during frame generation)
         self.globe_scale = THEME.globe.scale
@@ -240,72 +423,99 @@ class LcdDisplay:
         self._load_or_generate_frames()
         self._precompute_rgb565()
 
+        # Reusable frame buffer — avoids per-frame allocation
+        self._frame_buf = bytearray(self.width * self.height * 2)
+
         # HUD setup
         self._init_hud()
 
         # Preview frame counter
         self._preview_frame_count = 0
 
+    def reinit(self):
+        """Re-initialize the display hardware (called by main loop on persistent errors)."""
+        if self.driver:
+            self.driver._full_reinit()
+
     # ─── HUD ──────────────────────────────────────────────────────────────
 
     def _init_hud(self):
-        """Initialize HUD fonts, colors, and cached bars."""
-        typo = THEME.hud_typography
-        self.hud_font_value_size = typo.value_size
-        self.hud_font_unit_size = typo.unit_size
-        self.hud_font_label_size = typo.label_size
+        """Initialize HUD fonts, resolve per-element styles, and prepare caches."""
+        hud = THEME.hud
 
-        mono_fonts = list(typo.font_search_paths)
-
-        self.hud_font = None
-        self.hud_font_sm = None
-        self.hud_font_lbl = None
-
-        for font_path in mono_fonts:
+        # ── Find default font ──
+        self._default_font_path: Optional[str] = None
+        for path in hud.font_search_paths:
             try:
-                self.hud_font = ImageFont.truetype(font_path, self.hud_font_value_size)
-                self.hud_font_sm = ImageFont.truetype(font_path, self.hud_font_unit_size)
-                self.hud_font_lbl = ImageFont.truetype(font_path, self.hud_font_label_size)
-                logger.info(f"Loaded HUD font: {font_path}")
+                ImageFont.truetype(path, 12)  # probe
+                self._default_font_path = path
+                logger.info(f"Loaded HUD font: {path}")
                 break
             except (OSError, IOError):
                 continue
-
-        if self.hud_font is None:
-            self.hud_font = ImageFont.load_default()
-            self.hud_font_sm = self.hud_font
-            self.hud_font_lbl = self.hud_font
+        if self._default_font_path is None:
             logger.warning("Using default bitmap font for HUD")
 
-        # Pre-compute baseline offset for unit suffix alignment
-        try:
-            val_ascent = self.hud_font.getmetrics()[0]
-            unit_ascent = self.hud_font_sm.getmetrics()[0]
-            self._unit_baseline_offset = val_ascent - unit_ascent
-        except Exception:
-            self._unit_baseline_offset = 4  # safe fallback
+        self._font_cache: dict[tuple, ImageFont.FreeTypeFont] = {}
 
-        # Color palette
-        c = THEME.hud_colors
-        self.hud_color_primary = c.primary
-        self.hud_color_label = c.label
-        self.hud_color_dim = c.dim
-        self.hud_color_border = c.border
-        self.hud_color_bg = c.background
+        # ── Resolve all elements through the cascade ──
+        self._resolved: dict[str, _ResolvedElement] = {}
+        for bar, names, has_unit in [
+            (hud.top, ["lat", "lon", "over"], [False, False, False]),
+            (hud.bottom, ["alt", "vel", "age"], [True, True, False]),
+        ]:
+            for name, unit_flag in zip(names, has_unit):
+                element = getattr(bar, name)
+                lbl = resolve_text_style("label", element, bar, hud)
+                val = resolve_text_style("value", element, bar, hud)
 
-        # Layout grid
-        lay = THEME.hud_layout
-        self.hud_grid = lay.grid
-        self.hud_top_height = lay.top_bar_height
-        self.hud_bottom_height = lay.bottom_bar_height
-        self.hud_label_y = lay.label_y
-        self.hud_value_y = lay.value_y
-        self.hud_unit_gap = lay.unit_gap
+                lbl_font = self._get_font(lbl.font, lbl.size)
+                val_font = self._get_font(val.font, val.size)
+
+                unit_resolved = None
+                baseline_offset = 0
+                if unit_flag:
+                    unt = resolve_text_style("unit", element, bar, hud)
+                    unt_font = self._get_font(unt.font, unt.size)
+                    unit_resolved = _ResolvedText(color=unt.color, font=unt_font)
+                    try:
+                        baseline_offset = val_font.getmetrics()[0] - unt_font.getmetrics()[0]
+                    except Exception:
+                        baseline_offset = 4
+
+                self._resolved[name] = _ResolvedElement(
+                    label=_ResolvedText(color=lbl.color, font=lbl_font),
+                    value=_ResolvedText(color=val.color, font=val_font),
+                    unit=unit_resolved,
+                    cell_width=element.cell_width,
+                    unit_baseline_offset=baseline_offset,
+                )
+
+        # ── Cache layout values ──
+        self._hud_grid = hud.grid
+        self._hud_label_y = hud.label_y
+        self._hud_value_y = hud.value_y
+        self._hud_unit_gap = hud.unit_gap
+        self._hud_bg = hud.background
+        self._hud_top_height = hud.top.height
+        self._hud_bot_height = hud.bottom.height
+        self._hud_top_border = resolve_border_color(hud.top, hud)
+        self._hud_bot_border = resolve_border_color(hud.bottom, hud)
 
         # Cached HUD state: track what's currently rendered to avoid redraws
         self._hud_cache_key: Optional[str] = None
         self._hud_top_bytes: Optional[bytes] = None
         self._hud_bottom_bytes: Optional[bytes] = None
+
+    def _get_font(self, font_path: Optional[str], size: int) -> ImageFont.FreeTypeFont:
+        """Load a font at a given size, using the cache."""
+        path = font_path or self._default_font_path
+        if path is None:
+            return ImageFont.load_default()
+        key = (path, size)
+        if key not in self._font_cache:
+            self._font_cache[key] = ImageFont.truetype(path, size)
+        return self._font_cache[key]
 
     def _render_hud_bars(self, telemetry: "ISSFix") -> str:
         """Render top and bottom HUD bars and cache as RGB565 bytes.
@@ -331,69 +541,68 @@ class LcdDisplay:
             return cache_key
 
         w = self.width
-        g = self.hud_grid
-        top_h = self.hud_top_height
-        bot_h = self.hud_bottom_height
+        g = self._hud_grid
+        top_h = self._hud_top_height
+        bot_h = self._hud_bot_height
+        label_y = self._hud_label_y
+        value_y = self._hud_value_y
 
         # ── Top bar ──
-        top_img = Image.new('RGB', (w, top_h), self.hud_color_bg)
+        top_img = Image.new('RGB', (w, top_h), self._hud_bg)
         draw = ImageDraw.Draw(top_img)
-        draw.line([0, top_h - 1, w, top_h - 1], fill=self.hud_color_border)
-
-        label_y = self.hud_label_y
-        value_y = self.hud_value_y
+        draw.line([0, top_h - 1, w, top_h - 1], fill=self._hud_top_border)
 
         # LAT cell
-        lay = THEME.hud_layout
+        lat_el = self._resolved["lat"]
         lat_x = g
-        draw.text((lat_x, label_y), "LAT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        draw.text((lat_x, value_y), lat_val, fill=self.hud_color_primary, font=self.hud_font)
+        draw.text((lat_x, label_y), "LAT", fill=lat_el.label.color, font=lat_el.label.font)
+        draw.text((lat_x, value_y), lat_val, fill=lat_el.value.color, font=lat_el.value.font)
 
         # LON cell
-        lon_x = lat_x + lay.lat_cell_width + g
-        draw.text((lon_x, label_y), "LON", fill=self.hud_color_label, font=self.hud_font_lbl)
-        draw.text((lon_x, value_y), lon_val, fill=self.hud_color_primary, font=self.hud_font)
+        lon_el = self._resolved["lon"]
+        lon_x = lat_x + lat_el.cell_width + g
+        draw.text((lon_x, label_y), "LON", fill=lon_el.label.color, font=lon_el.label.font)
+        draw.text((lon_x, value_y), lon_val, fill=lon_el.value.color, font=lon_el.value.font)
 
         # Region indicator (right-aligned)
+        over_el = self._resolved["over"]
         region = get_common_area_name(lat, lon)
         right_edge = w - g
-        over_label_w = draw.textbbox((0, 0), "OVER", font=self.hud_font_lbl)[2]
-        draw.text((right_edge - over_label_w, label_y), "OVER", fill=self.hud_color_label, font=self.hud_font_lbl)
-        region_text_w = draw.textbbox((0, 0), region, font=self.hud_font_sm)[2]
-        draw.text((right_edge - region_text_w, value_y), region, fill=self.hud_color_primary, font=self.hud_font_sm)
+        over_label_w = draw.textbbox((0, 0), "OVER", font=over_el.label.font)[2]
+        draw.text((right_edge - over_label_w, label_y), "OVER", fill=over_el.label.color, font=over_el.label.font)
+        region_text_w = draw.textbbox((0, 0), region, font=over_el.value.font)[2]
+        draw.text((right_edge - region_text_w, value_y), region, fill=over_el.value.color, font=over_el.value.font)
 
         # ── Bottom bar ──
-        bot_img = Image.new('RGB', (w, bot_h), self.hud_color_bg)
+        bot_img = Image.new('RGB', (w, bot_h), self._hud_bg)
         draw = ImageDraw.Draw(bot_img)
-        draw.line([0, 0, w, 0], fill=self.hud_color_border)
-
-        label_y = self.hud_label_y
-        value_y = self.hud_value_y
-        unit_y = value_y + self._unit_baseline_offset
+        draw.line([0, 0, w, 0], fill=self._hud_bot_border)
 
         # ALT cell
+        alt_el = self._resolved["alt"]
         alt_x = g
-        alt_w = lay.alt_cell_width
-        draw.text((alt_x, label_y), "ALT", fill=self.hud_color_label, font=self.hud_font_lbl)
-        draw.text((alt_x, value_y), alt_val, fill=self.hud_color_primary, font=self.hud_font)
-        alt_text_w = draw.textbbox((0, 0), alt_val, font=self.hud_font)[2]
-        draw.text((alt_x + alt_text_w + self.hud_unit_gap, unit_y),
-                  "km", fill=self.hud_color_dim, font=self.hud_font_sm)
+        draw.text((alt_x, label_y), "ALT", fill=alt_el.label.color, font=alt_el.label.font)
+        draw.text((alt_x, value_y), alt_val, fill=alt_el.value.color, font=alt_el.value.font)
+        alt_text_w = draw.textbbox((0, 0), alt_val, font=alt_el.value.font)[2]
+        draw.text((alt_x + alt_text_w + self._hud_unit_gap, value_y + alt_el.unit_baseline_offset),
+                  "km", fill=alt_el.unit.color, font=alt_el.unit.font)
 
         # VEL cell
-        vel_x = alt_x + alt_w + g
-        draw.text((vel_x, label_y), "VEL", fill=self.hud_color_label, font=self.hud_font_lbl)
-        draw.text((vel_x, value_y), vel_val, fill=self.hud_color_primary, font=self.hud_font)
-        vel_text_w = draw.textbbox((0, 0), vel_val, font=self.hud_font)[2]
-        draw.text((vel_x + vel_text_w + self.hud_unit_gap, unit_y),
-                  "km/h", fill=self.hud_color_dim, font=self.hud_font_sm)
+        vel_el = self._resolved["vel"]
+        vel_x = alt_x + alt_el.cell_width + g
+        draw.text((vel_x, label_y), "VEL", fill=vel_el.label.color, font=vel_el.label.font)
+        draw.text((vel_x, value_y), vel_val, fill=vel_el.value.color, font=vel_el.value.font)
+        vel_text_w = draw.textbbox((0, 0), vel_val, font=vel_el.value.font)[2]
+        draw.text((vel_x + vel_text_w + self._hud_unit_gap, value_y + vel_el.unit_baseline_offset),
+                  "km/h", fill=vel_el.unit.color, font=vel_el.unit.font)
 
         # Data age indicator (right-aligned)
+        age_el = self._resolved["age"]
         right_edge = w - g
-        age_label_w = draw.textbbox((0, 0), "AGE", font=self.hud_font_lbl)[2]
-        draw.text((right_edge - age_label_w, label_y), "AGE", fill=self.hud_color_label, font=self.hud_font_lbl)
-        age_text_w = draw.textbbox((0, 0), age_val, font=self.hud_font_sm)[2]
-        draw.text((right_edge - age_text_w, value_y), age_val, fill=self.hud_color_dim, font=self.hud_font_sm)
+        age_label_w = draw.textbbox((0, 0), "LAST", font=age_el.label.font)[2]
+        draw.text((right_edge - age_label_w, label_y), "LAST", fill=age_el.label.color, font=age_el.label.font)
+        age_text_w = draw.textbbox((0, 0), age_val, font=age_el.value.font)[2]
+        draw.text((right_edge - age_text_w, value_y), age_val, fill=age_el.value.color, font=age_el.value.font)
 
         # Convert to RGB565 bytes
         self._hud_top_bytes = self._image_to_rgb565_bytes(top_img)
@@ -415,7 +624,11 @@ class LcdDisplay:
         return rgb565.astype('>u2').tobytes()
 
     def _precompute_rgb565(self):
-        """Pre-compute RGB565 bytes for all cached frames."""
+        """Pre-compute RGB565 data for all cached frames.
+
+        Stores both bytes (for direct display) and numpy uint16 arrays
+        (for fast inter-frame blending).
+        """
         logger.info("Pre-computing RGB565 frame data...")
         self.frame_bytes_cache = []
         for frame in self.frame_cache:
@@ -446,26 +659,66 @@ class LcdDisplay:
         self._generate_frames()
 
     def _generate_frames(self):
-        """Pre-render all Earth rotation frames using Cartopy."""
-        logger.info(f"Generating {self.num_frames} Earth frames with Cartopy...")
+        """Pre-render all Earth rotation frames using Cartopy.
+
+        Uses multiprocessing to spread work across CPU cores and 110m
+        resolution features for faster geometry processing.
+        """
+        import multiprocessing as mp
+
+        # Verify cartopy is available before spawning workers
+        try:
+            import cartopy  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "Cartopy and matplotlib are required for frame generation. "
+                "Pre-generate frames on a development machine using generate_frames.py, "
+                "then copy var/frame_cache/ to the target device."
+            )
+
+        # Serialize globe config as a plain dict so it's picklable
+        g = THEME.globe
+        globe_cfg = {
+            'background': g.background,
+            'ocean_color': g.ocean_color,
+            'land_color': g.land_color,
+            'land_border_color': g.land_border_color,
+            'land_border_width': g.land_border_width,
+            'coastline_color': g.coastline_color,
+            'coastline_width': g.coastline_width,
+            'grid_color': g.grid_color,
+            'grid_width': g.grid_width,
+            'grid_alpha': g.grid_alpha,
+        }
+
+        degrees_per_frame = 360 / self.num_frames
+        work_args = [
+            ((i * degrees_per_frame) - 180, self.width, self.height,
+             self.globe_scale, globe_cfg)
+            for i in range(self.num_frames)
+        ]
+
+        n_workers = min(mp.cpu_count(), self.num_frames)
+        logger.info(f"Generating {self.num_frames} Earth frames "
+                     f"({n_workers} workers, 110m resolution)...")
 
         self.frame_cache = []
-        degrees_per_frame = 360 / self.num_frames
+        with mp.Pool(n_workers) as pool:
+            for i, frame_array in enumerate(
+                pool.imap(self._render_globe_frame_worker, work_args)
+            ):
+                self.frame_cache.append(Image.fromarray(frame_array))
+                if (i + 1) % 10 == 0 or (i + 1) == self.num_frames:
+                    logger.info(f"  {i+1}/{self.num_frames} frames done")
 
-        for i in range(self.num_frames):
-            central_lon = (i * degrees_per_frame) - 180
-            logger.info(f"  Generating frame {i+1}/{self.num_frames} (lon={central_lon:.0f}\u00b0)...")
-            frame = self._render_globe_frame(central_lon)
-            self.frame_cache.append(frame)
-
-        # Update globe geometry from the rendered frames
         self._update_globe_geometry()
 
-        # Save to cache
+        # Save to cache (uncompressed — much faster to write than gzip)
         logger.info("Saving frames to cache...")
         try:
-            frame_dict = {f'frame_{i}': np.array(frame) for i, frame in enumerate(self.frame_cache)}
-            np.savez_compressed(self.cache_dir / f"globe_{self.num_frames}f.npz", **frame_dict)
+            frame_dict = {f'frame_{i}': np.array(frame)
+                          for i, frame in enumerate(self.frame_cache)}
+            np.savez(self.cache_dir / f"globe_{self.num_frames}f.npz", **frame_dict)
             logger.info("Frames cached successfully")
         except Exception as e:
             logger.warning(f"Failed to save cache: {e}")
@@ -484,47 +737,67 @@ class LcdDisplay:
         self.globe_center_y = self.height // 2
         self.globe_radius_px = globe_size // 2
 
-    def _render_globe_frame(self, central_lon: float, central_lat: float = 0) -> Image.Image:
-        """Render a single globe frame at the given central longitude."""
-        g = THEME.globe
-        bg_hex = rgb_to_hex(g.background)
+    @staticmethod
+    def _render_globe_frame_worker(args: tuple) -> np.ndarray:
+        """Render a single globe frame. Multiprocessing-friendly (static).
 
-        globe_size = int(min(self.width, self.height) * self.globe_scale)
+        Returns the composited frame as a numpy uint8 RGB array.
+        """
+        central_lon, width, height, globe_scale, globe_cfg = args
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+
+        bg_hex = rgb_to_hex(globe_cfg['background'])
+        globe_size = int(min(width, height) * globe_scale)
         dpi = 100
-        fig = plt.figure(figsize=(globe_size/dpi, globe_size/dpi), dpi=dpi, facecolor=bg_hex)
+        fig = plt.figure(figsize=(globe_size / dpi, globe_size / dpi), dpi=dpi, facecolor=bg_hex)
 
-        projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=central_lat)
+        projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=0)
         ax = fig.add_subplot(1, 1, 1, projection=projection)
         ax.set_facecolor(bg_hex)
         ax.set_global()
 
-        ax.add_feature(cfeature.OCEAN, facecolor=rgb_to_hex(g.ocean_color), edgecolor='none', zorder=0)
-        ax.add_feature(cfeature.LAND, facecolor=rgb_to_hex(g.land_color),
-                        edgecolor=rgb_to_hex(g.land_border_color),
-                        linewidth=g.land_border_width, zorder=1)
-        ax.add_feature(cfeature.COASTLINE, edgecolor=rgb_to_hex(g.coastline_color),
-                        linewidth=g.coastline_width, zorder=2)
-        ax.gridlines(color=rgb_to_hex(g.grid_color), linewidth=g.grid_width,
-                      alpha=g.grid_alpha, linestyle='-')
+        # Use 110m (lowest) resolution for faster geometry processing
+        ax.add_feature(cfeature.NaturalEarthFeature(
+            'physical', 'ocean', '110m',
+            facecolor=rgb_to_hex(globe_cfg['ocean_color']), edgecolor='none'), zorder=0)
+        ax.add_feature(cfeature.NaturalEarthFeature(
+            'physical', 'land', '110m',
+            facecolor=rgb_to_hex(globe_cfg['land_color']),
+            edgecolor=rgb_to_hex(globe_cfg['land_border_color']),
+            linewidth=globe_cfg['land_border_width']), zorder=1)
+        ax.add_feature(cfeature.NaturalEarthFeature(
+            'physical', 'coastline', '110m',
+            facecolor='none',
+            edgecolor=rgb_to_hex(globe_cfg['coastline_color']),
+            linewidth=globe_cfg['coastline_width']), zorder=2)
+        ax.gridlines(color=rgb_to_hex(globe_cfg['grid_color']),
+                      linewidth=globe_cfg['grid_width'],
+                      alpha=globe_cfg['grid_alpha'], linestyle='-')
         ax.spines['geo'].set_visible(False)
 
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=dpi, facecolor=bg_hex, edgecolor='none',
-                    bbox_inches='tight', pad_inches=0)
+        # Render to raw RGBA buffer instead of PNG encode/decode round-trip
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba())
         plt.close(fig)
-        buf.seek(0)
 
-        globe_img = Image.open(buf).convert('RGB')
-        buf.close()
+        globe_img = rgba[:, :, :3]  # drop alpha channel
 
-        final_img = Image.new('RGB', (self.width, self.height), g.background)
-        x_offset = (self.width - globe_img.width) // 2
-        y_offset = (self.height - globe_img.height) // 2
-        final_img.paste(globe_img, (x_offset, y_offset))
+        # Composite onto full-size canvas
+        final = np.zeros((height, width, 3), dtype=np.uint8)
+        final[:, :] = globe_cfg['background']
+        x_off = (width - globe_img.shape[1]) // 2
+        y_off = (height - globe_img.shape[0]) // 2
+        final[y_off:y_off + globe_img.shape[0],
+              x_off:x_off + globe_img.shape[1]] = globe_img
 
-        return final_img
+        return final
 
     # ─── ISS marker (RGB565 byte-buffer operations) ──────────────────────
 
@@ -645,9 +918,9 @@ class LcdDisplay:
         if self._hud_top_bytes is None or self._hud_bottom_bytes is None:
             return
 
-        top_size = self.width * self.hud_top_height * 2
-        bot_size = self.width * self.hud_bottom_height * 2
-        bot_offset = (self.height - self.hud_bottom_height) * self.width * 2
+        top_size = self.width * self._hud_top_height * 2
+        bot_size = self.width * self._hud_bot_height * 2
+        bot_offset = (self.height - self._hud_bot_height) * self.width * 2
 
         # Top bar: rows 0..top_height
         frame_buf[0:top_size] = self._hud_top_bytes
@@ -661,7 +934,7 @@ class LcdDisplay:
         """Update the display with current ISS telemetry.
 
         Optimized pipeline:
-        1. Copy pre-computed RGB565 bytes for current globe frame
+        1. Copy pre-computed RGB565 bytes into reusable buffer
         2. Draw ISS marker directly into byte buffer (small area)
         3. Patch cached HUD bars into byte buffer (memcpy)
         4. Send to display
@@ -678,8 +951,8 @@ class LcdDisplay:
         rotation_progress = (elapsed % self._rotation_period) / self._rotation_period
         current_frame = int(rotation_progress * self.num_frames) % self.num_frames
 
-        # Start with pre-computed RGB565 bytes for this globe frame
-        frame_buf = bytearray(self.frame_bytes_cache[current_frame])
+        # Copy pre-computed RGB565 bytes into reusable buffer (no allocation)
+        self._frame_buf[:] = self.frame_bytes_cache[current_frame]
 
         # Calculate ISS screen position for this frame's view angle
         central_lon = (current_frame * (360 / self.num_frames)) - 180
@@ -688,20 +961,20 @@ class LcdDisplay:
         # Draw ISS marker directly into byte buffer
         if iss_pos is not None:
             px, py, opacity = iss_pos
-            self._draw_iss_marker_rgb565(frame_buf, px, py, opacity)
+            self._draw_iss_marker_rgb565(self._frame_buf, px, py, opacity)
 
         # Patch HUD bars into byte buffer
-        self._patch_hud_bytes(frame_buf)
+        self._patch_hud_bytes(self._frame_buf)
 
         # Send to display
         if self.driver:
-            self.driver.display_raw(frame_buf)
+            self.driver.display_raw(self._frame_buf)
 
         # Preview mode: save occasional PNGs
         if self.driver is None:
             self._preview_frame_count += 1
             if self._preview_frame_count % 30 == 1:
-                self._save_preview(frame_buf)
+                self._save_preview(self._frame_buf)
 
     def _save_preview(self, pixel_bytes: Union[bytes, bytearray]):
         """Save an RGB565 frame buffer as a PNG preview image."""

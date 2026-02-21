@@ -4,16 +4,56 @@ Version: 0.1.0
 Summary: Self-contained ISS tracker with 3D globe on 3.5 inch TFT LCD
 Author: ISS Display Maintainers
 Requires-Python: >=3.10
+Description-Content-Type: text/x-rst
 License-File: LICENSE
 Requires-Dist: Pillow>=10.0.0
 Requires-Dist: requests>=2.32.0
 Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: cartopy>=0.22.0
+Requires-Dist: matplotlib>=3.8.0
 Requires-Dist: numpy>=1.26.0
-Provides-Extra: dev
-Requires-Dist: pytest>=8.0.0; extra == "dev"
-Provides-Extra: hw
-Requires-Dist: spidev; extra == "hw"
-Requires-Dist: RPi.GPIO; extra == "hw"
-Provides-Extra: dynamic
-Requires-Dist: readme; extra == "dynamic"
+Requires-Dist: spidev>=3.6
+Requires-Dist: rpi-lgpio>=0.6
 Dynamic: license-file
+
+## ISS Tracker Display
+
+Self-contained Python application that fetches real-time ISS telemetry, renders a continuously spinning 3D globe with the ISS position, and drives a 3.5" TFT LCD (320x480, ST7796S controller) on a Raspberry Pi.
+
+### Flow
+1. Query the ISS position from `wheretheiss.at`.
+2. Render an orthographic globe projection via Cartopy, with ISS marker and occlusion effects.
+3. Overlay HUD telemetry bars (LAT, LON, ALT, VEL).
+4. Send the frame to either the LCD (via SPI) or a preview PNG.
+
+### Hardware Prerequisites
+- Raspberry Pi 3B (or newer) running Raspberry Pi OS.
+- 3.5" IPS LCD (320x480, ST7796S) connected to the SPI header.
+- SPI enabled via `raspi-config`.
+
+### Software Requirements
+- Python 3.10+
+- System packages: `libopenjp2-7`, `libtiff6`, etc. (installed automatically on Raspberry Pi OS).
+- Python dependencies listed in `pyproject.toml` (install via `pip install -e .`).
+
+### Environment Variables
+Create a `.env` file in the repo root or export the variables manually:
+
+```
+ISS_API_URL=https://api.wheretheiss.at/v1/satellites/25544
+PREVIEW_ONLY=false
+ISS_PREVIEW_DIR=var/previews
+```
+
+### Installing & Running
+```bash
+pip install -e .
+iss-display --preview-only  # dry run without hardware
+iss-display                 # run on hardware
+```
+
+Or run directly:
+```bash
+python -m iss_display.app.main --preview-only  # dry run without hardware
+python -m iss_display.app.main                 # run on hardware
+```

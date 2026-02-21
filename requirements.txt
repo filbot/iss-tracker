@@ -6,4 +6,4 @@ cartopy>=0.22.0
 matplotlib>=3.8.0
 numpy>=1.26.0
 spidev>=3.6
-RPi.GPIO>=0.7.1
+rpi-lgpio>=0.6

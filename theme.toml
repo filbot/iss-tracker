@@ -1,0 +1,119 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  ISS Tracker — Theme Configuration                                     ║
+# ║                                                                        ║
+# ║  Boeing Primary Flight Display inspired color scheme.                  ║
+# ║  Colors are [R, G, B] with values 0-255.                              ║
+# ║  Delete or comment out any line to use the built-in default.           ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+
+# ── Globe (3D Earth) ─────────────────────────────────────────────────────
+
+[globe]
+scale               = 0.70
+iss_orbit_scale     = 1.10
+num_frames          = 144
+rotation_period_sec = 14.0
+
+background          = [0, 0, 0]
+ocean_color         = [62, 160, 206]    # Boeing PFD sky blue (#3EA0CE)
+land_color          = [167, 117, 66]    # Boeing PFD ground brown (#A77542)
+land_border_color   = [120, 85, 48]
+land_border_width   = 0.5
+coastline_color     = [140, 140, 140]
+coastline_width     = 0.5
+grid_color          = [255, 255, 255]   # White
+grid_width          = 0.3
+grid_alpha          = 0.4
+
+
+# ── ISS Marker (glowing dot on globe) ────────────────────────────────────
+
+[marker]
+glow_color          = [255, 0, 255]     # Magenta (matches Boeing target color)
+core_color          = [255, 0, 255]
+center_color        = [255, 255, 255]
+
+outer_ring_radius   = 7
+ring_step           = 2
+ring_count          = 3
+core_radius         = 3
+
+ring_brightness_base = 50
+ring_brightness_step = 40
+
+min_size_scale      = 0.6
+max_size_scale      = 1.0
+
+center_dot_opacity_threshold = 0.5
+fade_start          = 0.05
+opacity_cutoff      = 0.05
+occlusion_factor    = 0.3
+
+
+# ── HUD (Heads-Up Display) ───────────────────────────────────────────────
+#
+# Boeing PFD color conventions:
+#   Green   — labels, active modes
+#   White   — current data readouts
+#   Magenta — target/reference information
+#   Amber   — caution-level advisories
+#
+# Text styles use a 3-level cascade:
+#   element override  >  bar base  >  hud base
+
+[hud]
+grid                = 8
+label_y             = 6
+value_y             = 22
+unit_gap            = 2
+background          = [0, 0, 0]
+border_color        = [0, 0, 0]
+
+# Base text styles — apply to ALL HUD elements unless overridden below.
+
+[hud.label]
+color               = [0, 255, 0]       # Boeing green
+size                = 11
+
+[hud.value]
+color               = [255, 255, 255]   # White
+size                = 17
+
+[hud.unit]
+color               = [255, 255, 255]   # White
+size                = 15
+
+
+# ── Top Bar: LAT, LON, OVER ─────────────────────────────────────────────
+
+[hud.top]
+height              = 48
+
+[hud.top.lat]
+cell_width          = 85
+
+[hud.top.lon]
+cell_width          = 100
+
+[hud.top.over]
+# OVER value in magenta (Boeing "target/reference" color)
+[hud.top.over.value]
+color               = [255, 0, 255]     # Magenta / pink
+
+
+# ── Bottom Bar: ALT, VEL, AGE ───────────────────────────────────────────
+
+[hud.bottom]
+height              = 48
+
+[hud.bottom.alt]
+cell_width          = 85
+
+[hud.bottom.vel]
+cell_width          = 115
+
+[hud.bottom.age]
+# AGE value in amber (Boeing "caution/advisory" color)
+[hud.bottom.age.value]
+color               = [255, 179, 0]     # Boeing amber

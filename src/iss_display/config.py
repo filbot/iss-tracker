@@ -25,6 +25,7 @@ def _as_bool(value: str, *, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     iss_api_url: str
+    n2yo_api_key: str
     display_width: int
     display_height: int
     preview_dir: Path
@@ -44,6 +45,7 @@ class Settings:
 
         return cls(
             iss_api_url=os.getenv("ISS_API_URL", "https://api.wheretheiss.at/v1/satellites/25544"),
+            n2yo_api_key=os.getenv("N2YO_API_KEY", ""),
             display_width=int(os.getenv("DISPLAY_WIDTH", "320")),
             display_height=int(os.getenv("DISPLAY_HEIGHT", "480")),
             preview_dir=preview_dir,
@@ -54,5 +56,5 @@ class Settings:
             gpio_bl=int(os.getenv("GPIO_BL", "18")),
             spi_bus=int(os.getenv("SPI_BUS", "0")),
             spi_device=int(os.getenv("SPI_DEVICE", "0")),
-            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "80000000")),
+            spi_speed_hz=int(os.getenv("SPI_SPEED_HZ", "48000000")),
         )

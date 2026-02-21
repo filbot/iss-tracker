@@ -18,8 +18,8 @@ class Region(NamedTuple):
 LAND_REGIONS: List[Region] = [
     Region("Antarctica", -90, -75, -180, 180),
     Region("Australia", -50, -10, 110, 180),
-    Region("South America", -60, 15, -85, -35),
-    Region("North America", 15, 85, -170, -50),
+    Region("S. America", -60, 15, -85, -35),
+    Region("N. America", 15, 85, -170, -50),
     Region("Africa", -35, 38, -20, 55),
     Region("Europe", 35, 72, -25, 60),
     Region("Asia", 5, 80, 60, 180),
