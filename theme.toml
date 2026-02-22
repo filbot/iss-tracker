@@ -99,7 +99,7 @@ cell_width          = 100
 [hud.top.over]
 # OVER value in magenta (Boeing "target/reference" color)
 [hud.top.over.value]
-color               = [247, 84, 217]     # Magenta / pink
+color               = [252, 129, 208]     # Pink
 
 
 # ── Bottom Bar: ALT, VEL, AGE ───────────────────────────────────────────
