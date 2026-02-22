@@ -92,7 +92,7 @@ Delete or comment out any line to fall back to the built-in default. If `theme.t
 | Top | `over` | label, value | Right-aligned (region name) |
 | Bottom | `alt` | label, value, unit ("km") | Cell-width positioned |
 | Bottom | `vel` | label, value, unit ("km/h") | Cell-width positioned |
-| Bottom | `age` | label, value | Right-aligned (data freshness) |
+| Bottom | `last` | label, value | Right-aligned (data freshness) |
 
 Each sub-part (label, value, unit) accepts `color`, `size`, and `font` (absolute path to a `.ttf`/`.otf` file).
 

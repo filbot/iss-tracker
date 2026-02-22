@@ -570,8 +570,21 @@ class LcdDisplay:
         right_edge = w - g
         over_label_w = draw.textbbox((0, 0), "OVER", font=over_el.label.font)[2]
         draw.text((right_edge - over_label_w, label_y), "OVER", fill=over_el.label.color, font=over_el.label.font)
-        region_text_w = draw.textbbox((0, 0), region, font=over_el.value.font)[2]
-        draw.text((right_edge - region_text_w, value_y), region, fill=over_el.value.color, font=over_el.value.font)
+        # Render multi-word regions with a tighter gap than the mono font's
+        # full-width space (e.g. "N. America" → "N." + small gap + "America").
+        words = region.split(" ")
+        if len(words) > 1:
+            space_w = draw.textbbox((0, 0), " ", font=over_el.value.font)[2]
+            tight_gap = max(1, space_w // 3)
+            word_widths = [draw.textbbox((0, 0), w_, font=over_el.value.font)[2] for w_ in words]
+            total_w = sum(word_widths) + tight_gap * (len(words) - 1)
+            x = right_edge - total_w
+            for i, w_ in enumerate(words):
+                draw.text((x, value_y), w_, fill=over_el.value.color, font=over_el.value.font)
+                x += word_widths[i] + tight_gap
+        else:
+            region_text_w = draw.textbbox((0, 0), region, font=over_el.value.font)[2]
+            draw.text((right_edge - region_text_w, value_y), region, fill=over_el.value.color, font=over_el.value.font)
 
         # ── Bottom bar ──
         bot_img = Image.new('RGB', (w, bot_h), self._hud_bg)

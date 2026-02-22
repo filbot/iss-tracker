@@ -47,7 +47,7 @@ Threading:
 | File | Lines | Purpose |
 |------|-------|---------|
 | `src/iss_display/app/main.py` | 373 | Entry point, render loop, `ISSOrbitInterpolator` |
-| `src/iss_display/display/lcd_driver.py` | 996 | `ST7796S` SPI driver, `LcdDisplay` (globe + ISS + HUD rendering) |
+| `src/iss_display/display/lcd_driver.py` | ~1010 | `ST7796S` SPI driver, `LcdDisplay` (globe + ISS + HUD rendering) |
 | `src/iss_display/theme.py` | 383 | Theme dataclasses, TOML loader, cascade resolution |
 | `src/iss_display/data/iss_client.py` | 122 | `ISSClient` with API fallback chain, `ISSFix` dataclass |
 | `src/iss_display/data/geography.py` | 54 | Bounding-box continent/ocean lookup |
@@ -89,7 +89,7 @@ Theme
     └── bottom: BottomBarStyle
         ├── alt: HudElement
         ├── vel: HudElement
-        └── age: HudElement
+        └── last: HudElement
 ```
 
 ### 3-Level Cascade
@@ -157,6 +157,7 @@ Total CPU work per frame: ~2-5 ms. SPI transfer dominates at ~65 ms.
 - **Bottom bar** (48px): ALT (km), VEL (km/h), LAST (data freshness, right-aligned)
 - Typography: B612 Mono preferred (Airbus cockpit font), falls back through DejaVu/Liberation/Free
 - Each element has independently resolved colors and fonts via the theme cascade
+- Multi-word region names (e.g. "N. America") rendered with tight word spacing (~1/3 normal space width) to avoid the wide gap inherent to monospace fonts
 - Layout: 8px grid padding, explicit pixel positioning
 - **Cached as RGB565 bytes** — only re-rendered when formatted display values change (~every 30s)
 
