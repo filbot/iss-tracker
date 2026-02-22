@@ -15,6 +15,8 @@ __pycache__/
 var/
 *.log
 
+# Build artifacts
+*.egg-info/
+
 # macOS cruft
 .DS_Store
-scripts/

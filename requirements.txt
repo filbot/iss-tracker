@@ -1,9 +1,0 @@
-Pillow>=10.0.0
-requests>=2.32.0
-python-dotenv>=1.0.0
-pytest>=8.0.0
-cartopy>=0.22.0
-matplotlib>=3.8.0
-numpy>=1.26.0
-spidev>=3.6
-rpi-lgpio>=0.6
