@@ -82,7 +82,6 @@ class ST7796S:
         self.bl = settings.gpio_bl
 
         self._consecutive_failures = 0
-        self._frame_count = 0
         self._last_light_reinit = time.monotonic()
         self._last_full_reinit = time.monotonic()
         self._last_health_check = time.monotonic()
@@ -91,7 +90,7 @@ class ST7796S:
 
         self._init_gpio()
         self._init_spi()
-        self._init_display()
+        self._init_display(first_boot=True)
 
     def _init_gpio(self):
         GPIO.setmode(GPIO.BCM)
@@ -126,7 +125,7 @@ class ST7796S:
         GPIO.output(self.dc, GPIO.HIGH)
         self.spi.writebytes([data])
 
-    def _init_display(self):
+    def _init_display(self, *, first_boot: bool = False):
         self._reset()
 
         self.command(SWRESET)
@@ -150,10 +149,11 @@ class ST7796S:
         self.command(DISPON)
         time.sleep(0.01)
 
-        GPIO.output(self.bl, GPIO.HIGH)
-
         self.set_window(0, 0, self.width - 1, self.height - 1)
-        self._fill(0x0000)
+
+        if first_boot:
+            GPIO.output(self.bl, GPIO.HIGH)
+            self._fill(0x0000)
 
         now = time.monotonic()
         self._last_light_reinit = now
@@ -163,19 +163,19 @@ class ST7796S:
         logger.info("Display initialized")
 
     def _light_reinit(self):
-        """Lightweight re-init: reaffirm controller state without hardware reset."""
+        """Reaffirm critical controller registers without sleep/wake transitions.
+
+        Only sends stateless register-write commands that correct potential
+        drift without triggering display blanking. SLPOUT, NORON, and DISPON
+        are intentionally omitted — they are no-ops on an already-awake display
+        but can cause brief visual artifacts on some ST7796S modules.
+        """
         try:
-            self.command(SLPOUT)
-            time.sleep(0.15)
             self.command(COLMOD)
             self.data(0x55)
             self.command(MADCTL)
             self.data(0x48)
             self.command(INVON)
-            self.command(NORON)
-            time.sleep(0.01)
-            self.command(DISPON)
-            time.sleep(0.01)
             self.set_window(0, 0, self.width - 1, self.height - 1)
             self._last_light_reinit = time.monotonic()
             logger.info("Display light re-init complete")
@@ -309,19 +309,21 @@ class ST7796S:
     def display_raw(self, pixel_bytes: Union[bytes, bytearray]):
         """Display pre-converted RGB565 data directly, with error recovery."""
         try:
-            self.command(RAMWR)
+            self.set_window(0, 0, self.width - 1, self.height - 1)
             GPIO.output(self.dc, GPIO.HIGH)
             self.spi.writebytes2(pixel_bytes)
             self._consecutive_failures = 0
-            self._frame_count += 1
-
-            # Periodic maintenance every ~900 frames (~60s at 15fps)
-            if self._frame_count % 900 == 0:
-                self._periodic_maintenance()
         except Exception as e:
             self._consecutive_failures += 1
             logger.error(f"SPI write failed ({self._consecutive_failures}x): {e}")
             self._recover()
+
+    def maybe_run_maintenance(self):
+        """Run periodic maintenance if any interval has elapsed.
+
+        Call this between frames from the main loop, NOT during frame writes.
+        """
+        self._periodic_maintenance()
 
     def close(self):
         """Properly shut down the display with robust error handling."""
@@ -436,6 +438,11 @@ class LcdDisplay:
         """Re-initialize the display hardware (called by main loop on persistent errors)."""
         if self.driver:
             self.driver._full_reinit()
+
+    def maybe_run_maintenance(self):
+        """Run periodic display maintenance if due (call between frames)."""
+        if self.driver:
+            self.driver.maybe_run_maintenance()
 
     # ─── HUD ──────────────────────────────────────────────────────────────
 

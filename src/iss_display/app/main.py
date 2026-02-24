@@ -309,6 +309,9 @@ def run_loop(settings: Settings) -> None:
                     except Exception as reinit_err:
                         logger.error(f"Display re-init failed: {reinit_err}")
 
+            # Display maintenance (health checks, periodic re-init) between frames
+            driver.maybe_run_maintenance()
+
             # Check fetch thread health every 30 seconds
             now_mono = time.monotonic()
             if now_mono - last_thread_check > 30.0:
@@ -324,6 +327,9 @@ def run_loop(settings: Settings) -> None:
                     actual_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
                     logger.info(f"FPS: {actual_fps:.1f} (frame time: {avg_frame_time*1000:.1f}ms)")
                 last_fps_log = time.time()
+
+            # Brief idle window for display controller refresh scan
+            time.sleep(0.002)
 
     finally:
         logger.info("Cleaning up...")
