@@ -1,2 +1,0 @@
-[console_scripts]
-iss-display = iss_display.app.main:main

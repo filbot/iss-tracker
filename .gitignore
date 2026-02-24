@@ -18,5 +18,8 @@ var/
 # Build artifacts
 *.egg-info/
 
+# IDE / tool configs
+.claude/
+
 # macOS cruft
 .DS_Store
