@@ -505,6 +505,15 @@ def run_loop(settings: Settings) -> None:
         telemetry = interpolator.get_telemetry()
         logger.info(f"Initial ISS Position: Lat {telemetry.latitude:.2f}, Lon {telemetry.longitude:.2f}")
         renderer.set_telemetry(telemetry)
+
+        # Read toggle state BEFORE starting renderer to avoid ISS view flash
+        initial_view = toggle.poll()
+        if initial_view == ViewToggle.CREW_VIEW:
+            renderer.set_view(ViewToggle.CREW_VIEW)
+            crew_data = astros_client.get_astros()
+            renderer.set_crew_data(crew_data)
+            logger.info("Starting in CREW view (toggle switch off)")
+
         renderer.start()
 
         _sd_notify("READY=1")
