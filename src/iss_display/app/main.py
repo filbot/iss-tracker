@@ -46,6 +46,11 @@ _MAX_DATA_AGE_SEC = 600.0
 # Render thread: consider stuck if no heartbeat for this long
 _RENDER_STALE_SEC = 10.0
 
+# Periodic GC: collect cyclic references from requests/SSL without
+# leaving GC enabled (which would trigger unpredictable collections
+# during render-critical sections).
+_GC_INTERVAL_SEC = 1800.0  # 30 minutes
+
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(
@@ -494,6 +499,7 @@ def run_loop(settings: Settings) -> None:
     gc.disable()
     gc.collect()  # one clean sweep before starting
     logger.info("Automatic GC disabled")
+    last_gc_time = time.monotonic()
 
     try:
         telemetry = interpolator.get_telemetry()
@@ -540,6 +546,13 @@ def run_loop(settings: Settings) -> None:
                 if now_mono - renderer.heartbeat > _RENDER_STALE_SEC:
                     logger.critical("Render thread stuck, exiting for systemd restart")
                     sys.exit(1)
+
+            # Periodic GC: collect cyclic references leaked by requests/SSL
+            if now_mono - last_gc_time > _GC_INTERVAL_SEC:
+                last_gc_time = now_mono
+                collected = gc.collect()
+                if collected > 0:
+                    logger.info("GC collected %d objects", collected)
 
             time.sleep(0.100)
 

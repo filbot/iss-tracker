@@ -2,6 +2,8 @@
 Description=ISS Tracker Display
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
@@ -12,16 +14,13 @@ EnvironmentFile=%h/iss-tracker/.env
 # Watchdog: systemd kills and restarts service if no ping within this window
 WatchdogSec=60s
 
-# Restart policy
+# Restart policy: 5s -> 10s -> 20s -> 40s -> 60s (5 steps)
 Restart=always
 RestartSec=5
+RestartSteps=5
 RestartMaxDelaySec=60
 
-# Restart limits: after 5 failures in 5 minutes, reboot the system
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-# Resource limits
+# Resource limits (requires cgroup_enable=memory in cmdline.txt)
 MemoryMax=250M
 MemoryHigh=200M
 
