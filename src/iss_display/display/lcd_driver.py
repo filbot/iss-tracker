@@ -754,14 +754,57 @@ class LcdDisplay:
         self._crew_cache_key = None
 
         # Pre-resolve fonts at sizes needed for crew view
-        self._crew_title_font = self._get_font(None, 15)
-        self._crew_subtitle_font = self._get_font(None, 11)
-        self._crew_count_font = self._get_font(None, 48)
-        self._crew_craft_font = self._get_font(None, 13)
-        self._crew_name_font = self._get_font(None, 11)
+        self._crew_title_font = self._get_font(None, 13)
+        self._crew_stats_lbl_font = self._get_font(None, 10)
+        self._crew_stats_val_font = self._get_font(None, 14)
+        self._crew_header_font = self._get_font(None, 12)
+        self._crew_list_font = self._get_font(None, 11)
+        self._crew_footer_font = self._get_font(None, 9)
+        self._crew_footer_val_font = self._get_font(None, 12)
+
+    @staticmethod
+    def _draw_dashed_line(draw, x0, x1, y, color, dash=4, gap=3):
+        """Draw a horizontal dashed line."""
+        x = x0
+        while x < x1:
+            end = min(x + dash, x1)
+            draw.line([x, y, end, y], fill=color, width=1)
+            x += dash + gap
+
+    def _center_text(self, draw, text, y, font, color):
+        """Draw text horizontally centered."""
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        draw.text(((self.width - tw) // 2, y), text, fill=color, font=font)
+
+    def _draw_label_value_row(self, draw, labels, values,
+                              lbl_font, val_font,
+                              label_y, value_y, margin, color):
+        """Draw evenly-spaced label/value columns, center-aligned to each other."""
+        W = self.width
+        n = len(labels)
+        for i, (lbl, val) in enumerate(zip(labels, values)):
+            lbl_w = draw.textbbox((0, 0), lbl, font=lbl_font)[2]
+            val_w = draw.textbbox((0, 0), val, font=val_font)[2]
+            col_w = max(lbl_w, val_w)
+
+            # Anchor the column (using the wider element): left / center / right
+            if i == 0:
+                cx = margin + 2
+            elif i == n - 1:
+                cx = W - margin - 2 - col_w
+            else:
+                cx = (W - col_w) // 2
+
+            # Center both label and value within the column
+            lx = cx + (col_w - lbl_w) // 2
+            vx = cx + (col_w - val_w) // 2
+
+            draw.text((lx, label_y), lbl, fill=color, font=lbl_font)
+            draw.text((vx, value_y), val, fill=color, font=val_font)
 
     def render_crew_view(self, astros_data) -> bool:
-        """Render the People in Space view into _frame_buf and send to display.
+        """Render the crew status monitor view into _frame_buf and send to display.
 
         Returns True if a frame was sent (data changed), False if cached.
         """
@@ -773,71 +816,101 @@ class LcdDisplay:
 
         img = self._crew_img
         draw = ImageDraw.Draw(img)
+        W = self.width
+        color = (255, 255, 255)
+        margin = 8
 
         # Clear to black
-        draw.rectangle([0, 0, self.width, self.height], fill=(0, 0, 0))
+        draw.rectangle([0, 0, W, self.height], fill=(0, 0, 0))
 
-        label_color = THEME.hud.label.color
-        value_color = THEME.hud.value.color
+        # ── Section 1: Title ──
+        sp = 4  # spacing above/below lines
+        self._center_text(draw, "HUMAN SPACEFLIGHT STATUS MONITOR",
+                          6, self._crew_title_font, color)
+        draw.line([margin, 26, W - margin, 26], fill=color, width=1)
 
-        # Title
-        title = "PEOPLE IN SPACE"
-        bbox = draw.textbbox((0, 0), title, font=self._crew_title_font)
-        tw = bbox[2] - bbox[0]
-        draw.text(((self.width - tw) // 2, 30), title,
-                  fill=label_color, font=self._crew_title_font)
+        # ── Section 2: Status summary (label-over-value) ──
+        num_craft = len(set(c.craft for c in astros_data.crew))
+        stats_labels = ["CREW IN ORBIT", "ACTIVE CRAFT", "STATUS"]
+        stats_values = [str(astros_data.count), str(num_craft), "NOMINAL"]
+        self._draw_label_value_row(
+            draw, stats_labels, stats_values,
+            self._crew_stats_lbl_font, self._crew_stats_val_font,
+            label_y=26 + sp + 2, value_y=26 + sp + 16, margin=margin, color=color)
+        line2_y = 26 + sp + 16 + 18 + sp
+        draw.line([margin, line2_y, W - margin, line2_y], fill=color, width=1)
 
-        # Subtitle
-        subtitle = "RIGHT NOW"
-        bbox = draw.textbbox((0, 0), subtitle, font=self._crew_subtitle_font)
-        sw = bbox[2] - bbox[0]
-        draw.text(((self.width - sw) // 2, 52), subtitle,
-                  fill=label_color, font=self._crew_subtitle_font)
+        # ── Section 3: Column headers ──
+        hdr_y = line2_y + sp + 2
+        draw.text((margin + 2, hdr_y), "CREW MEMBER",
+                  fill=color, font=self._crew_header_font)
+        craft_hdr = "CRAFT"
+        bbox = draw.textbbox((0, 0), craft_hdr, font=self._crew_header_font)
+        craft_hdr_w = bbox[2] - bbox[0]
+        draw.text((W - margin - 2 - craft_hdr_w, hdr_y), craft_hdr,
+                  fill=color, font=self._crew_header_font)
+        line3_y = hdr_y + 18 + sp
+        draw.line([margin, line3_y, W - margin, line3_y], fill=color, width=1)
 
-        # Large count number
-        count_str = str(astros_data.count)
-        bbox = draw.textbbox((0, 0), count_str, font=self._crew_count_font)
-        cw = bbox[2] - bbox[0]
-        draw.text(((self.width - cw) // 2, 80), count_str,
-                  fill=value_color, font=self._crew_count_font)
-
-        # Separator line
-        margin = 20
-        sep_y = 145
-        draw.line([margin, sep_y, self.width - margin, sep_y],
-                  fill=label_color, width=1)
-
-        # Group crew by craft
+        # ── Section 4: Crew table ──
+        # Group by craft, sort names alphabetically, ISS first
         crafts: dict[str, list[str]] = {}
         for member in astros_data.crew:
             crafts.setdefault(member.craft, []).append(member.name)
+        for names in crafts.values():
+            names.sort()
+        craft_order = sorted(
+            crafts.keys(),
+            key=lambda c: (0 if c.upper() == "ISS" else 1, c.upper())
+        )
 
-        y = sep_y + 15
-        line_h = 16
-        indent = 24
+        y = line3_y + sp + 2
+        line_h = 22
+        bottom_zone = self.height - 40  # reserve space for footer
 
-        for craft_name, members in crafts.items():
-            if y + line_h > self.height - 10:
-                draw.text((margin, y), "...",
-                          fill=value_color, font=self._crew_name_font)
-                break
+        for ci, craft_name in enumerate(craft_order):
+            # Dashed separator between craft groups (not before the first)
+            if ci > 0:
+                self._draw_dashed_line(draw, margin + 2, W - margin - 2,
+                                       y, color)
+                y += 12
 
-            # Craft header
-            draw.text((margin, y), craft_name.upper(),
-                      fill=label_color, font=self._crew_craft_font)
-            y += line_h + 2
+            members = crafts[craft_name]
+            craft_label = craft_name.upper()
+            bbox = draw.textbbox((0, 0), craft_label, font=self._crew_list_font)
+            craft_w = bbox[2] - bbox[0]
 
             for name in members:
-                if y + line_h > self.height - 10:
-                    draw.text((indent, y), "...",
-                              fill=value_color, font=self._crew_name_font)
+                if y + line_h > bottom_zone:
+                    draw.text((margin + 2, y), "...",
+                              fill=color, font=self._crew_list_font)
                     y += line_h
                     break
-                draw.text((indent, y), name,
-                          fill=value_color, font=self._crew_name_font)
+                draw.text((margin + 2, y), name.upper(),
+                          fill=color, font=self._crew_list_font)
+                draw.text((W - margin - 2 - craft_w, y), craft_label,
+                          fill=color, font=self._crew_list_font)
                 y += line_h
 
-            y += 8  # gap between craft groups
+        # ── Section 5: Bottom status bar (labels + values) ──
+        footer_line_y = self.height - 38
+        draw.line([margin, footer_line_y, W - margin, footer_line_y],
+                  fill=color, width=1)
+
+        # Build per-craft footer items dynamically
+        footer_labels = []
+        footer_values = []
+        for craft_name in craft_order:
+            footer_labels.append(f"{craft_name.upper()} CREW")
+            footer_values.append(str(len(crafts[craft_name])))
+        footer_labels.append("MSG")
+        footer_values.append("SUCCESS")
+
+        self._draw_label_value_row(
+            draw, footer_labels, footer_values,
+            self._crew_footer_font, self._crew_footer_val_font,
+            label_y=footer_line_y + sp, value_y=footer_line_y + sp + 14,
+            margin=margin, color=color)
 
         # Convert to RGB565 and write to frame buffer
         rgb565_bytes = self._image_to_rgb565_bytes(img)
