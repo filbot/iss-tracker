@@ -12,7 +12,7 @@
 [globe]
 scale               = 0.70
 iss_orbit_scale     = 1.20
-num_frames          = 144
+num_frames          = 240
 rotation_period_sec = 14.0
 
 background          = [0, 0, 0]
@@ -70,6 +70,11 @@ value_y             = 22
 unit_gap            = 2
 background          = [0, 0, 0]
 border_color        = [0, 0, 0]
+
+# Throttle HUD re-renders. Each re-render forces a full-frame SPI write that
+# briefly interrupts globe rotation. Lower = more responsive HUD digits;
+# higher = smoother globe rotation. 1.0 = update HUD once per second.
+min_render_interval_sec = 1.0
 
 # Base text styles — apply to ALL HUD elements unless overridden below.
 

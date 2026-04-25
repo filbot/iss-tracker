@@ -52,8 +52,8 @@ class GlobeStyle:
     # Globe sizing
     scale: float = 0.70                    # Globe diameter as fraction of display short edge
     iss_orbit_scale: float = 1.10          # ISS altitude exaggeration (1.0 = on surface)
-    num_frames: int = 144                  # Rotation frames (higher = smoother, more RAM/startup)
-    rotation_period_sec: float = 14.0      # Seconds for one full rotation (tuned to match ~10.4 FPS display rate)
+    num_frames: int = 240                  # Rotation frames (higher = smoother, more RAM/startup)
+    rotation_period_sec: float = 14.0      # Seconds for one full rotation (~17 FPS at 240 frames)
 
     # Colors (all RGB)
     background: RGB = (0, 0, 0)
@@ -210,6 +210,13 @@ class HudStyle:
     unit_gap: int = 2                      # Horizontal gap before unit suffix (px)
     background: RGB = (0, 0, 0)            # Bar background fill
     border_color: RGB = (255, 255, 255)    # Separator line color (default for both bars)
+
+    # ── Update throttle ──
+    # Minimum interval between HUD re-renders (seconds). Each re-render forces a
+    # full-frame SPI write (~51 ms) and PIL drawing (~30 ms), which interrupts
+    # globe rotation. Throttling lets the cheap globe-region path handle most
+    # frames. Lower = more responsive HUD; higher = smoother globe rotation.
+    min_render_interval_sec: float = 1.0
 
     # ── HUD-level base text styles (lowest priority in cascade) ──
     label: TextStyle = field(default_factory=lambda: TextStyle(

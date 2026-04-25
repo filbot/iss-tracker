@@ -205,11 +205,13 @@ Styles cascade: `hud base → bar base → element override`. Set a style broadl
 
 ## Globe Frame Cache
 
-The 3D globe is rendered as 144 pre-computed frames using [Cartopy](https://scitools.org.uk/cartopy). These are cached at `var/frame_cache/globe_144f.npz`.
+The 3D globe is rendered as 240 pre-computed frames using [Cartopy](https://scitools.org.uk/cartopy). These are cached at `var/frame_cache/globe_240f.npz`.
 
-- **First run** — generates all frames (~1–2 minutes on Pi 4, longer on Pi 3)
+- **First run** — generates all frames (~2–4 minutes on Pi 4, longer on Pi 3)
 - **Subsequent runs** — loads from cache (~3 seconds)
-- **Regenerate** — delete `var/frame_cache/` (needed after changing globe colors in `theme.toml`)
+- **Regenerate** — delete `var/frame_cache/` (needed after changing globe colors or `num_frames` in `theme.toml`)
+
+> **SPI bandwidth ceiling.** A full 320×480 RGB565 frame is 307 KB; over the 48 MHz SPI bus that's ~51 ms per frame, which caps full-frame writes at ~10–12 FPS realistic. The renderer mitigates this by sending only the globe disc (~17 ms) when the HUD hasn't changed and only the marker bbox (~1 ms) when the globe hasn't either. Don't expect 60 FPS — it's not physically possible on this hardware.
 
 To speed things up, you can generate the cache on a faster machine and copy it over:
 

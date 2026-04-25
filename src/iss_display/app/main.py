@@ -10,8 +10,11 @@ import socket
 import sys
 import time
 import signal
+from collections import deque
 from typing import Sequence, Optional
 import threading
+
+from PIL import Image
 
 from iss_display.config import Settings
 from iss_display.display.lcd_driver import LcdDisplay
@@ -369,6 +372,61 @@ class WatchdogPinger(threading.Thread):
         self._stop.set()
 
 
+class HudComposer(threading.Thread):
+    """Background thread that renders HUD bars off the render-thread critical path.
+
+    The HUD's PIL drawing (text rendering with TrueType fonts + RGB565 conversion)
+    takes ~80 ms on a Pi 3 — long enough to cause visible globe-rotation hitches
+    if it ran inline. This thread does that work in parallel: PIL releases the
+    GIL during heavy ops, so it overlaps with SPI writes in the render thread.
+
+    Pacing: wakes every ``min_render_interval_sec`` (theme.toml) and re-renders
+    if telemetry has been set. The render thread polls per-bar version counters
+    on LcdDisplay and transmits only the bars whose version has advanced.
+    """
+
+    def __init__(self, lcd_display: LcdDisplay):
+        super().__init__(daemon=True, name="hud-composer")
+        self._lcd = lcd_display
+        self._running = True
+        self._lock = threading.Lock()
+        self._telemetry: Optional[ISSFix] = None
+        self._wakeup = threading.Event()
+        # Private scratch images — never shared with the render thread, so PIL
+        # operations here cannot tear concurrent reads of LcdDisplay state.
+        self._top_img = Image.new('RGB', (lcd_display.width, lcd_display._hud_top_height), lcd_display._hud_bg)
+        self._bot_img = Image.new('RGB', (lcd_display.width, lcd_display._hud_bot_height), lcd_display._hud_bg)
+        self._interval = lcd_display._hud_min_render_interval
+
+    def set_telemetry(self, telemetry: ISSFix) -> None:
+        """Update the telemetry snapshot consumed by the next composer pass."""
+        with self._lock:
+            self._telemetry = telemetry
+
+    def stop(self) -> None:
+        self._running = False
+        self._wakeup.set()  # break out of any in-progress wait
+
+    def run(self) -> None:
+        while self._running:
+            # Wait either for the throttle interval or an explicit wake (stop).
+            self._wakeup.wait(timeout=self._interval)
+            self._wakeup.clear()
+            if not self._running:
+                return
+            with self._lock:
+                telemetry = self._telemetry
+            if telemetry is None:
+                continue
+            try:
+                top_b, bot_b, key = self._lcd.render_hud_into(
+                    telemetry, self._top_img, self._bot_img,
+                )
+                self._lcd.apply_hud_bytes(top_b, bot_b, key)
+            except Exception:
+                logger.exception("HudComposer render failed; will retry next tick")
+
+
 class DisplayRenderer(threading.Thread):
     """Dedicated thread for smooth globe rotation rendering.
 
@@ -389,6 +447,13 @@ class DisplayRenderer(threading.Thread):
         self._active_view: int = ViewToggle.ISS_VIEW
         self._crew_data = None
         self._crew_rendered = False
+        # Optional frame-time ring buffer (enabled by ISS_PERF_LOG=1).
+        # Stores last 256 ISS-frame render durations in milliseconds.
+        # Histogram is only formatted on demand to avoid eating the savings.
+        self._perf_enabled = os.getenv("ISS_PERF_LOG", "").lower() in ("1", "true", "yes")
+        self._frame_durations_ms: Optional[deque] = (
+            deque(maxlen=256) if self._perf_enabled else None
+        )
 
     def set_telemetry(self, telemetry: ISSFix):
         """Update the telemetry snapshot read by the render loop."""
@@ -423,6 +488,28 @@ class DisplayRenderer(threading.Thread):
 
     def stop(self):
         self._running = False
+
+    def dump_perf_stats(self) -> None:
+        """Log p50/p95/p99/max frame-render durations from the ring buffer.
+
+        No-op unless ISS_PERF_LOG=1. Snapshots the deque so concurrent appends
+        don't change percentiles mid-computation.
+        """
+        if self._frame_durations_ms is None:
+            return
+        samples = sorted(self._frame_durations_ms)
+        if not samples:
+            logger.info("Frame-time stats: no samples yet")
+            return
+        n = len(samples)
+
+        def pct(p):
+            return samples[min(n - 1, int(n * p))]
+
+        logger.info(
+            "Frame-time stats (n=%d, ms): p50=%.1f p95=%.1f p99=%.1f max=%.1f",
+            n, pct(0.50), pct(0.95), pct(0.99), samples[-1],
+        )
 
     def run(self):
         lcd = self._lcd
@@ -461,8 +548,8 @@ class DisplayRenderer(threading.Thread):
         time_in_frame = elapsed % frame_period
         time_to_next = frame_period - time_in_frame
 
-        if time_to_next > 0.008:
-            time.sleep(time_to_next - 0.006)
+        if time_to_next > 0.004:
+            time.sleep(time_to_next - 0.002)
 
         target = now + time_to_next
         while time.time() < target:
@@ -474,7 +561,12 @@ class DisplayRenderer(threading.Thread):
 
         if telemetry is not None:
             try:
-                lcd.update_with_telemetry(telemetry)
+                if self._frame_durations_ms is not None:
+                    t_start = time.perf_counter()
+                    lcd.update_with_telemetry(telemetry)
+                    self._frame_durations_ms.append((time.perf_counter() - t_start) * 1000.0)
+                else:
+                    lcd.update_with_telemetry(telemetry)
                 self._consecutive_errors = 0
             except Exception as e:
                 self._consecutive_errors += 1
@@ -547,6 +639,7 @@ def run_loop(settings: Settings) -> None:
     last_thread_check = time.monotonic()
 
     renderer = DisplayRenderer(driver)
+    hud_composer = HudComposer(driver)
 
     # Toggle switch: GPIO input, or preview mode fallback
     preview_mode = settings.preview_only or not _HW_AVAILABLE
@@ -560,6 +653,11 @@ def run_loop(settings: Settings) -> None:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    # SIGUSR1 dumps current frame-time percentiles (no-op unless ISS_PERF_LOG=1).
+    # Useful for live profiling: `kill -USR1 <pid>` after running a while.
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, lambda *_: renderer.dump_perf_stats())
+
     # Disable automatic GC to prevent unpredictable stop-the-world pauses
     # that block ALL threads (including the render thread) via the GIL.
     # With pre-allocated arrays, reference counting handles most cleanup.
@@ -572,6 +670,18 @@ def run_loop(settings: Settings) -> None:
         telemetry = interpolator.get_telemetry()
         logger.info(f"Initial ISS Position: Lat {telemetry.latitude:.2f}, Lon {telemetry.longitude:.2f}")
         renderer.set_telemetry(telemetry)
+        hud_composer.set_telemetry(telemetry)
+
+        # Synchronous initial HUD render so the first frame on the display
+        # has correct HUD bytes — the render thread starts immediately and
+        # the composer's first scheduled wakeup is up to a full interval away.
+        try:
+            top_b, bot_b, key = driver.render_hud_into(
+                telemetry, driver._hud_top_img, driver._hud_bot_img,
+            )
+            driver.apply_hud_bytes(top_b, bot_b, key)
+        except Exception:
+            logger.exception("Initial HUD render failed; first frames may show blank HUD")
 
         # Read toggle state BEFORE starting renderer to avoid ISS view flash
         initial_view = toggle.poll()
@@ -581,6 +691,7 @@ def run_loop(settings: Settings) -> None:
             renderer.set_crew_data(crew_data)
             logger.info("Starting in CREW view (toggle switch off)")
 
+        hud_composer.start()
         renderer.start()
 
         # Start watchdog pinger thread. It pings every 10s only if both the
@@ -611,6 +722,7 @@ def run_loop(settings: Settings) -> None:
             # Always keep ISS telemetry flowing (even in crew view)
             telemetry = interpolator.get_telemetry()
             renderer.set_telemetry(telemetry)
+            hud_composer.set_telemetry(telemetry)
 
             # Feed crew data to renderer when in crew view. get_astros() is a
             # non-blocking cache read; the background fetcher refreshes it.
@@ -656,8 +768,11 @@ def run_loop(settings: Settings) -> None:
             watchdog.stop()
         except NameError:
             pass  # never started (failed before line that assigns watchdog)
+        renderer.dump_perf_stats()
         renderer.stop()
+        hud_composer.stop()
         renderer.join(timeout=2.0)
+        hud_composer.join(timeout=2.0)
         interpolator.stop()
         astros_client.stop()
         driver.close()

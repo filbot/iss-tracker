@@ -1,5 +1,6 @@
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,11 @@ COLMOD  = 0x3A
 
 # Recovery constants
 _MAX_RECOVERY_ATTEMPTS = 3
+
+# Frame index resync threshold: snap to wall-clock if we've fallen this many
+# frames behind. Below the threshold, we advance one frame per render to
+# eliminate visible angular jumps under transient stalls.
+_FRAME_RESYNC_THRESHOLD = 4
 
 RGB = Tuple[int, int, int]
 
@@ -343,6 +349,15 @@ class LcdDisplay:
         self.globe_center_y = self.height // 2
         self.globe_radius_px = int(min(self.width, self.height) * self.globe_scale) // 2
 
+        # Globe disc bbox — sent on globe-only frames to avoid retransmitting
+        # the static HUD bars. Matches the rendering offset in _generate_frames.
+        globe_size = int(min(self.width, self.height) * self.globe_scale)
+        gx0 = (self.width - globe_size) // 2
+        gy0 = (self.height - globe_size) // 2
+        self._globe_disc_bbox: Tuple[int, int, int, int] = (
+            gx0, gy0, gx0 + globe_size - 1, gy0 + globe_size - 1,
+        )
+
         # Pre-rendered frame caches
         self.frame_cache: List[Image.Image] = []
         self.frame_bytes_cache: List[bytes] = []
@@ -371,6 +386,12 @@ class LcdDisplay:
         self._prev_frame_idx: Optional[int] = None
         self._prev_marker_bbox: Optional[Tuple[int, int, int, int]] = None  # (x0, y0, x1, y1)
         self._force_full_frame: bool = True  # first frame is always a full write
+
+        # Tracks which HUD-bar version was most recently transmitted to the
+        # display, so the render thread can detect when the composer has
+        # produced a new version that needs to be sent.
+        self._last_sent_top_version: int = 0
+        self._last_sent_bottom_version: int = 0
 
         # Pre-allocated marker drawing buffers (avoids per-frame numpy allocations)
         m = THEME.marker
@@ -491,10 +512,22 @@ class LcdDisplay:
         self._hud_top_border = resolve_border_color(hud.top, hud)
         self._hud_bot_border = resolve_border_color(hud.bottom, hud)
 
-        # Cached HUD state: track what's currently rendered to avoid redraws
+        # Cached HUD bytes: produced off-thread by HudComposer, consumed by the
+        # render thread. The lock guards atomic-swap of bytes + version counters.
+        # Per-bar versions let the render thread send only the bars that changed
+        # (split-SPI-transfer strategy: ~5 ms per HUD bar vs ~51 ms full-frame).
+        self._hud_lock = threading.Lock()
         self._hud_cache_key: Optional[str] = None
         self._hud_top_bytes: Optional[bytes] = None
         self._hud_bottom_bytes: Optional[bytes] = None
+        self._hud_top_version: int = 0
+        self._hud_bottom_version: int = 0
+
+        # Composer wake interval (seconds). Lower = more responsive HUD digits;
+        # higher = fewer split-SPI HUD writes (slightly smoother globe). HUD
+        # updates no longer hitch the render loop, so this is a tuning knob
+        # for HUD refresh rate, not a globe-smoothness knob.
+        self._hud_min_render_interval = THEME.hud.min_render_interval_sec
 
         # Pre-allocated Image objects — reused on every HUD redraw to avoid allocation
         self._hud_top_img = Image.new('RGB', (self.width, self._hud_top_height), self._hud_bg)
@@ -510,10 +543,15 @@ class LcdDisplay:
             self._font_cache[key] = ImageFont.truetype(path, size)
         return self._font_cache[key]
 
-    def _render_hud_bars(self, telemetry: "ISSFix") -> str:
-        """Render top and bottom HUD bars and cache as RGB565 bytes.
+    def render_hud_into(self, telemetry: "ISSFix",
+                        top_img: Image.Image, bot_img: Image.Image) -> Tuple[bytes, bytes, str]:
+        """Render the HUD bars into the given image buffers and return RGB565 bytes.
 
-        Returns the cache key string so callers can check if it changed.
+        Pure-ish: only writes to the passed images. Does not mutate any LcdDisplay
+        state, so it is safe to call from the HudComposer thread with its own
+        scratch buffers while the render thread reads the committed bytes.
+
+        Returns (top_bytes, bottom_bytes, cache_key).
         """
         lat = telemetry.latitude
         lon = telemetry.longitude
@@ -530,8 +568,6 @@ class LcdDisplay:
         age_val = f"{age_sec}s"
 
         cache_key = f"{lat_val}|{lon_val}|{alt_val}|{vel_val}|{age_sec}"
-        if cache_key == self._hud_cache_key:
-            return cache_key
 
         w = self.width
         g = self._hud_grid
@@ -540,8 +576,7 @@ class LcdDisplay:
         label_y = self._hud_label_y
         value_y = self._hud_value_y
 
-        # ── Top bar — reuse pre-allocated Image, clear before drawing ──
-        top_img = self._hud_top_img
+        # ── Top bar — clear before drawing into the caller-provided buffer ──
         draw = ImageDraw.Draw(top_img)
         draw.rectangle([0, 0, w, top_h], fill=self._hud_bg)
         draw.line([0, top_h - 1, w, top_h - 1], fill=self._hud_top_border)
@@ -580,8 +615,7 @@ class LcdDisplay:
             region_text_w = draw.textbbox((0, 0), region, font=over_el.value.font)[2]
             draw.text((right_edge - region_text_w, value_y), region, fill=over_el.value.color, font=over_el.value.font)
 
-        # ── Bottom bar — reuse pre-allocated Image, clear before drawing ──
-        bot_img = self._hud_bot_img
+        # ── Bottom bar — clear before drawing into the caller-provided buffer ──
         draw = ImageDraw.Draw(bot_img)
         draw.rectangle([0, 0, w, bot_h], fill=self._hud_bg)
         draw.line([0, 0, w, 0], fill=self._hud_bot_border)
@@ -612,12 +646,24 @@ class LcdDisplay:
         age_text_w = draw.textbbox((0, 0), age_val, font=age_el.value.font)[2]
         draw.text((right_edge - age_text_w, value_y), age_val, fill=age_el.value.color, font=age_el.value.font)
 
-        # Convert to RGB565 bytes
-        self._hud_top_bytes = self._image_to_rgb565_bytes(top_img)
-        self._hud_bottom_bytes = self._image_to_rgb565_bytes(bot_img)
-        self._hud_cache_key = cache_key
+        return self._image_to_rgb565_bytes(top_img), self._image_to_rgb565_bytes(bot_img), cache_key
 
-        return cache_key
+    def apply_hud_bytes(self, top_bytes: bytes, bottom_bytes: bytes, cache_key: str) -> None:
+        """Atomically swap in newly-rendered HUD bytes (called from HudComposer).
+
+        Increments per-bar version counters so the render thread knows to
+        retransmit each bar on its next frame. No-op if the cache key is
+        unchanged (the composer wakes on a fixed interval and may produce
+        identical output between ticks).
+        """
+        with self._hud_lock:
+            if cache_key == self._hud_cache_key:
+                return
+            self._hud_top_bytes = top_bytes
+            self._hud_bottom_bytes = bottom_bytes
+            self._hud_cache_key = cache_key
+            self._hud_top_version += 1
+            self._hud_bottom_version += 1
 
     # ─── Crew view ──────────────────────────────────────────────────────
 
@@ -1117,8 +1163,17 @@ class LcdDisplay:
         return (x0, y0, x1, y1)
 
     def _patch_hud_bytes(self, frame_buf: bytearray):
-        """Patch cached HUD bar bytes into a frame buffer."""
-        if self._hud_top_bytes is None or self._hud_bottom_bytes is None:
+        """Patch cached HUD bar bytes into a frame buffer.
+
+        Snapshots both bars under the HUD lock so the composer can't tear
+        the read by swapping bytes between the two assignments.
+        """
+        with self._hud_lock:
+            top_bytes = self._hud_top_bytes
+            bottom_bytes = self._hud_bottom_bytes
+            top_version = self._hud_top_version
+            bottom_version = self._hud_bottom_version
+        if top_bytes is None or bottom_bytes is None:
             return
 
         top_size = self.width * self._hud_top_height * 2
@@ -1126,26 +1181,40 @@ class LcdDisplay:
         bot_offset = (self.height - self._hud_bot_height) * self.width * 2
 
         # Top bar: rows 0..top_height
-        frame_buf[0:top_size] = self._hud_top_bytes
+        frame_buf[0:top_size] = top_bytes
 
         # Bottom bar: rows (height - bot_height)..height
-        frame_buf[bot_offset:bot_offset + bot_size] = self._hud_bottom_bytes
+        frame_buf[bot_offset:bot_offset + bot_size] = bottom_bytes
+
+        # Caller (full update) has just transmitted these bars in the same
+        # full-frame SPI write, so mark them sent — otherwise the post-globe
+        # HUD path would resend them on the next render.
+        self._last_sent_top_version = top_version
+        self._last_sent_bottom_version = bottom_version
 
     # ─── Main update loop entry point ─────────────────────────────────────
 
     def update_with_telemetry(self, telemetry: "ISSFix"):
         """Update the display with current ISS telemetry.
 
-        Uses a two-path strategy to minimise SPI bandwidth:
+        Render-thread fast path. PIL HUD rendering happens off-thread in the
+        HudComposer; this method only consumes the latest pre-rendered bytes
+        and pushes them to SPI. Three transmission strategies, chosen per frame:
 
-        Full update (globe changed, HUD changed, or forced):
-          Copy globe frame → draw marker → patch HUD → send full 307 KB frame.
+        Forced full update (init, view-toggle, error recovery):
+          Compose entire frame in _frame_buf and send 307 KB in one transfer.
+
+        Globe-region update (typical):
+          Refresh the disc bbox in _frame_buf_np → draw marker → send the
+          union of disc + marker bboxes (~17 ms SPI). When the composer has
+          produced new HUD bytes since our last transmission, follow up with
+          one or two HUD-bar region writes (~5 ms each). HUD updates therefore
+          cost ~5–10 ms of extra SPI per frame, never block on PIL, and never
+          force a full-frame transfer.
 
         Partial update (globe and HUD unchanged):
-          Erase previous marker region from globe cache → draw new marker →
-          send only the two tiny marker bounding-box regions (~1 KB total).
-          This is how the Waveshare driver achieves high effective frame rates
-          at the 48 MHz SPI limit.
+          Erase previous marker → draw new marker → send only the two tiny
+          marker bounding-box regions (~1 KB total).
         """
         if not self.frames_generated:
             logger.warning("Frames not yet generated")
@@ -1153,25 +1222,39 @@ class LcdDisplay:
 
         self._resync_after_reinit_if_needed()
 
-        # Determine current globe frame (time-based, decoupled from FPS)
+        # Hybrid frame indexing: advance by one frame per render, but resync
+        # to wall-clock if we've fallen too far behind (long stall recovery).
+        # Eliminates visible angular skips when a render goes over budget.
         elapsed = time.time() - self._rotation_start_time
         rotation_progress = (elapsed % self._rotation_period) / self._rotation_period
-        current_frame = int(rotation_progress * self.num_frames) % self.num_frames
+        target_frame = int(rotation_progress * self.num_frames) % self.num_frames
+        prev_frame = self._prev_frame_idx
+        if prev_frame is None:
+            current_frame = target_frame
+        else:
+            delta = (target_frame - prev_frame) % self.num_frames
+            if delta > _FRAME_RESYNC_THRESHOLD:
+                current_frame = target_frame
+            else:
+                current_frame = (prev_frame + 1) % self.num_frames
         central_lon = (current_frame * (360.0 / self.num_frames)) - 180.0
-
-        # Render HUD bars if telemetry changed (returns cache key, cheap when unchanged)
-        old_hud_key = self._hud_cache_key
-        new_hud_key = self._render_hud_bars(telemetry)
-        hud_changed = new_hud_key != old_hud_key
 
         globe_changed = current_frame != self._prev_frame_idx
         iss_pos = self._calc_iss_screen_pos(telemetry.latitude, telemetry.longitude, central_lon)
 
-        if self._force_full_frame or globe_changed or hud_changed:
+        if self._force_full_frame:
+            # Forced resync: send everything in one transfer using whatever
+            # HUD bytes the composer has produced. _do_full_update →
+            # _patch_hud_bytes already updates _last_sent_*_version, so the
+            # post-globe HUD path won't re-transmit immediately.
             self._do_full_update(current_frame, iss_pos)
             self._force_full_frame = False
+        elif globe_changed:
+            self._do_globe_region_update(current_frame, iss_pos)
+            self._flush_hud_if_dirty()
         else:
             self._do_partial_update(current_frame, iss_pos)
+            self._flush_hud_if_dirty()
 
         self._prev_frame_idx = current_frame
 
@@ -1180,6 +1263,41 @@ class LcdDisplay:
             self._preview_frame_count += 1
             if self._preview_frame_count % 30 == 1:
                 self._save_preview(self._frame_buf)
+
+    def _flush_hud_if_dirty(self) -> None:
+        """Transmit at most one stale HUD bar this frame.
+
+        Spreads the cost of an HUD update across two consecutive frames
+        instead of bundling both bars into one. With both bars sent on the
+        same render iteration, the worst-case frame was globe-region (~35 ms)
+        + 2 × HUD-bar transmission (~50 ms total) ≈ 85 ms. Sending one bar
+        per frame caps that at ~45 ms, leaving every frame comfortably under
+        the 58 ms budget at 17 FPS. The 1-frame tearing window between top
+        and bottom updates is imperceptible.
+
+        Top bar is prioritised so LAT/LON/OVER updates land first.
+        """
+        with self._hud_lock:
+            top_version = self._hud_top_version
+            bottom_version = self._hud_bottom_version
+            top_bytes = self._hud_top_bytes
+            bottom_bytes = self._hud_bottom_bytes
+
+        if top_bytes is not None and top_version != self._last_sent_top_version:
+            top_h = self._hud_top_height
+            top_size = self.width * top_h * 2
+            self._frame_buf[0:top_size] = top_bytes
+            self.display_region(0, 0, self.width - 1, top_h - 1)
+            self._last_sent_top_version = top_version
+            return
+
+        if bottom_bytes is not None and bottom_version != self._last_sent_bottom_version:
+            bot_h = self._hud_bot_height
+            bot_size = self.width * bot_h * 2
+            bot_offset = (self.height - bot_h) * self.width * 2
+            self._frame_buf[bot_offset:bot_offset + bot_size] = bottom_bytes
+            self.display_region(0, self.height - bot_h, self.width - 1, self.height - 1)
+            self._last_sent_bottom_version = bottom_version
 
     def _do_full_update(self, frame_idx: int, iss_pos):
         """Full-frame update: copy globe, draw marker, patch HUD, send everything."""
@@ -1195,6 +1313,45 @@ class LcdDisplay:
         if self.driver:
             self.driver.display_raw(self._frame_buf)
 
+        self._prev_marker_bbox = new_bbox
+
+    def _do_globe_region_update(self, frame_idx: int, iss_pos):
+        """Globe changed but HUD didn't: send only the disc bbox + marker.
+
+        Refreshes the globe disc into _frame_buf_np from the new cached frame,
+        draws the marker, then sends a single SPI transfer covering the union
+        of the disc bbox, the old marker bbox, and the new marker bbox. The
+        HUD bytes are not retransmitted, dropping typical SPI cost from
+        ~51 ms (full frame) to ~17 ms.
+        """
+        old_bbox = self._prev_marker_bbox
+
+        # Restore old marker region from the cache. This is required when the
+        # marker sat outside the disc bbox (it can extend past the disc by up
+        # to (iss_orbit_scale - 1) * radius pixels). When inside the disc,
+        # this is harmless extra work — the disc copy below overwrites it.
+        if old_bbox is not None:
+            x0, y0, x1, y1 = old_bbox
+            self._frame_buf_np[y0:y1 + 1, x0:x1 + 1] = self.frame_np_cache[frame_idx][y0:y1 + 1, x0:x1 + 1]
+
+        # Refresh the disc region from the new globe frame.
+        dx0, dy0, dx1, dy1 = self._globe_disc_bbox
+        self._frame_buf_np[dy0:dy1 + 1, dx0:dx1 + 1] = self.frame_np_cache[frame_idx][dy0:dy1 + 1, dx0:dx1 + 1]
+
+        # Draw new marker.
+        new_bbox = None
+        if iss_pos is not None:
+            px, py, opacity = iss_pos
+            new_bbox = self._draw_iss_marker_rgb565(px, py, opacity)
+
+        # Union(disc, old_marker, new_marker) sent as a single SPI transfer.
+        ux0, uy0, ux1, uy1 = self._globe_disc_bbox
+        for bb in (old_bbox, new_bbox):
+            if bb is not None:
+                ux0 = min(ux0, bb[0]); uy0 = min(uy0, bb[1])
+                ux1 = max(ux1, bb[2]); uy1 = max(uy1, bb[3])
+
+        self.display_region(ux0, uy0, ux1, uy1)
         self._prev_marker_bbox = new_bbox
 
     def _do_partial_update(self, frame_idx: int, iss_pos):
