@@ -256,9 +256,9 @@ class ISSOrbitInterpolator:
                     f"Errors: {e}"
                 )
 
-        except Exception as e:
+        except Exception:
             self._consecutive_failures += 1
-            logger.warning(f"API fetch failed ({self._consecutive_failures}x): {e}")
+            logger.exception("API fetch failed (%dx)", self._consecutive_failures)
 
     def _fetch_loop(self):
         """Background loop that fetches periodically with exponential backoff."""
@@ -279,8 +279,8 @@ class ISSOrbitInterpolator:
                 time.sleep(backoff)
                 if self._running:
                     self._do_fetch()
-            except Exception as e:
-                logger.error(f"Unexpected error in fetch loop: {e}")
+            except Exception:
+                logger.exception("Unexpected error in fetch loop")
                 time.sleep(5.0)
 
 
@@ -331,6 +331,44 @@ class ViewToggle:
         return self._current_view != self._prev_view
 
 
+class WatchdogPinger(threading.Thread):
+    """Sends systemd watchdog pings on a fixed cadence, conditioned on
+    main-loop and renderer health.
+
+    Pinging from a dedicated thread decouples watchdog liveness from any
+    transient stall in the main loop. The thread refuses to ping when the
+    main loop or renderer thread is stale — that way systemd can recover
+    a stuck process even if some thread is still alive enough to send pings.
+    """
+
+    PING_INTERVAL_SEC = 10.0
+    STALE_THRESHOLD_SEC = 30.0
+
+    def __init__(self, get_status):
+        super().__init__(daemon=True, name="sd-watchdog")
+        self._stop = threading.Event()
+        # callable returning (main_loop_age_sec, render_age_sec)
+        self._get_status = get_status
+
+    def run(self) -> None:
+        while not self._stop.wait(self.PING_INTERVAL_SEC):
+            try:
+                main_age, render_age = self._get_status()
+            except Exception:
+                logger.exception("Watchdog status callback failed")
+                continue
+            if main_age < self.STALE_THRESHOLD_SEC and render_age < self.STALE_THRESHOLD_SEC:
+                _sd_notify("WATCHDOG=1")
+            else:
+                logger.critical(
+                    "Skipping watchdog ping: main_age=%.1fs render_age=%.1fs",
+                    main_age, render_age,
+                )
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
 class DisplayRenderer(threading.Thread):
     """Dedicated thread for smooth globe rotation rendering.
 
@@ -358,13 +396,23 @@ class DisplayRenderer(threading.Thread):
             self._telemetry = telemetry
 
     def set_view(self, view: int):
-        """Set the active view (called from main thread)."""
+        """Set the active view (called from main thread).
+
+        Owns the full-frame resync on transitions back to ISS view, so the
+        renderer is self-consistent and the main loop doesn't need to know
+        about LcdDisplay internals.
+        """
         with self._lock:
             if view != self._active_view:
                 self._active_view = view
                 self._crew_rendered = False
                 if view == ViewToggle.CREW_VIEW:
                     self._lcd.invalidate_crew_cache()
+                else:
+                    # Switching back to ISS view: force a full frame to
+                    # resync the display with the globe buffer (the crew
+                    # view clobbered _frame_buf with text pixels).
+                    self._lcd.force_full_frame()
 
     def set_crew_data(self, data):
         """Update the crew data snapshot for the crew view."""
@@ -381,18 +429,27 @@ class DisplayRenderer(threading.Thread):
         frame_period = lcd._rotation_period / lcd.num_frames
 
         while self._running:
-            with self._lock:
-                active_view = self._active_view
+            try:
+                with self._lock:
+                    active_view = self._active_view
 
-            if active_view == ViewToggle.ISS_VIEW:
-                self._run_iss_frame(lcd, frame_period)
-            else:
-                self._run_crew_frame(lcd)
-
-            # Maintenance runs between frames where there is spare time.
-            # Needs to be on the render thread for safe SPI/GPIO access.
-            lcd.maybe_run_maintenance()
-            self.heartbeat = time.monotonic()
+                if active_view == ViewToggle.ISS_VIEW:
+                    self._run_iss_frame(lcd, frame_period)
+                else:
+                    self._run_crew_frame(lcd)
+            except (SystemExit, KeyboardInterrupt):
+                raise
+            except Exception:
+                self._consecutive_errors += 1
+                logger.exception(
+                    "Unhandled error in render loop (%dx)", self._consecutive_errors
+                )
+                self._handle_render_error(lcd)
+            finally:
+                # Heartbeat must update on every iteration, including error paths,
+                # or the main loop's stale-render detector will fire spuriously
+                # during long error loops.
+                self.heartbeat = time.monotonic()
 
     def _run_iss_frame(self, lcd, frame_period):
         """Render one ISS globe frame with precise timing."""
@@ -428,13 +485,18 @@ class DisplayRenderer(threading.Thread):
         """Render the crew view (static, re-render only on data change)."""
         with self._lock:
             crew_data = self._crew_data
-            crew_rendered = self._crew_rendered
+            need_render = (not self._crew_rendered) and (crew_data is not None)
 
-        if not crew_rendered and crew_data is not None:
+        if need_render:
             try:
                 lcd.render_crew_view(crew_data)
                 with self._lock:
-                    self._crew_rendered = True
+                    # Identity check: only mark rendered if no invalidation
+                    # (set_view / set_crew_data) fired during the render.
+                    # Otherwise we'd clobber the invalidation and show stale
+                    # data until the next view toggle.
+                    if self._crew_data is crew_data:
+                        self._crew_rendered = True
                 self._consecutive_errors = 0
             except Exception as e:
                 self._consecutive_errors += 1
@@ -449,10 +511,14 @@ class DisplayRenderer(threading.Thread):
         if self._consecutive_errors >= _EXIT_AFTER_ERRORS:
             logger.critical(
                 f"{self._consecutive_errors} consecutive render errors, "
-                f"exiting for systemd restart"
+                f"signalling main loop to exit for systemd restart"
             )
-            sys.exit(1)
-        elif self._consecutive_errors >= _REINIT_AFTER_ERRORS:
+            # sys.exit() inside a thread only raises SystemExit in this thread;
+            # it does not exit the process. Set the running flag so the main
+            # loop's renderer.is_alive() check exits cleanly via sys.exit(1).
+            self._running = False
+            return
+        if self._consecutive_errors >= _REINIT_AFTER_ERRORS:
             logger.warning(
                 f"{self._consecutive_errors} consecutive errors, "
                 f"attempting display re-init"
@@ -471,8 +537,9 @@ def run_loop(settings: Settings) -> None:
     interpolator = ISSOrbitInterpolator(iss_client, api_interval=30.0)
     interpolator.start()
 
-    # Pre-fetch crew data before entering main loop
-    astros_client.get_astros(force=True)
+    # Astros client runs its own refresh thread; start() does one
+    # synchronous fetch then spawns the background loop.
+    astros_client.start()
 
     logger.info("Starting ISS Tracker Display Loop...")
 
@@ -516,10 +583,22 @@ def run_loop(settings: Settings) -> None:
 
         renderer.start()
 
+        # Start watchdog pinger thread. It pings every 10s only if both the
+        # main loop and render thread are fresh — so a hung main loop or a
+        # silently-dead renderer will let systemd time us out and restart.
+        last_main_tick = time.monotonic()
+
+        def _watchdog_status():
+            now = time.monotonic()
+            return (now - last_main_tick, now - renderer.heartbeat)
+
+        watchdog = WatchdogPinger(_watchdog_status)
+        watchdog.start()
+
         _sd_notify("READY=1")
 
         while running:
-            _sd_notify("WATCHDOG=1")
+            last_main_tick = time.monotonic()
 
             # Poll toggle switch
             current_view = toggle.poll()
@@ -528,18 +607,17 @@ def run_loop(settings: Settings) -> None:
                 view_name = "ISS" if current_view == ViewToggle.ISS_VIEW else "CREW"
                 logger.info("View switched to %s", view_name)
                 renderer.set_view(current_view)
-                if current_view == ViewToggle.ISS_VIEW:
-                    # Force full frame to resync display with globe buffer
-                    driver.force_full_frame()
 
             # Always keep ISS telemetry flowing (even in crew view)
             telemetry = interpolator.get_telemetry()
             renderer.set_telemetry(telemetry)
 
-            # Feed crew data to renderer (client handles its own refresh timer)
+            # Feed crew data to renderer when in crew view. get_astros() is a
+            # non-blocking cache read; the background fetcher refreshes it.
             if current_view == ViewToggle.CREW_VIEW:
                 crew_data = astros_client.get_astros()
-                renderer.set_crew_data(crew_data)
+                if crew_data is not None:
+                    renderer.set_crew_data(crew_data)
 
             now_mono = time.monotonic()
 
@@ -556,7 +634,12 @@ def run_loop(settings: Settings) -> None:
                     logger.critical("Render thread stuck, exiting for systemd restart")
                     sys.exit(1)
 
-            # Periodic GC: collect cyclic references leaked by requests/SSL
+            # Periodic GC: collect cyclic references leaked by requests/SSL.
+            # Measured: ~7k objects per 30-min interval. Auto-GC stays disabled
+            # to avoid per-allocation pauses on the render path; collection is
+            # batched here. The pause is GIL-wide regardless of which thread
+            # initiates it, so moving it off the main loop would not reduce
+            # the stop-the-world duration.
             if now_mono - last_gc_time > _GC_INTERVAL_SEC:
                 last_gc_time = now_mono
                 collected = gc.collect()
@@ -569,9 +652,14 @@ def run_loop(settings: Settings) -> None:
         gc.enable()
         logger.info("Cleaning up...")
         _sd_notify("STOPPING=1")
+        try:
+            watchdog.stop()
+        except NameError:
+            pass  # never started (failed before line that assigns watchdog)
         renderer.stop()
         renderer.join(timeout=2.0)
         interpolator.stop()
+        astros_client.stop()
         driver.close()
         logger.info("Done.")
 

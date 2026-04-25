@@ -37,13 +37,9 @@ RASET   = 0x2B
 RAMWR   = 0x2C
 MADCTL  = 0x36
 COLMOD  = 0x3A
-RDDST   = 0x09
 
 # Recovery constants
 _MAX_RECOVERY_ATTEMPTS = 3
-_LIGHT_REINIT_INTERVAL_SEC = 15 * 60    # 15 minutes
-_FULL_REINIT_INTERVAL_SEC = 60 * 60     # 60 minutes
-_HEALTH_CHECK_INTERVAL_SEC = 60         # 1 minute
 
 RGB = Tuple[int, int, int]
 
@@ -82,11 +78,6 @@ class ST7796S:
         self.bl = settings.gpio_bl
 
         self._consecutive_failures = 0
-        self._last_light_reinit = time.monotonic()
-        self._last_full_reinit = time.monotonic()
-        self._last_health_check = time.monotonic()
-        self._health_check_supported = True  # disabled if readback returns all zeros
-        self._health_check_zero_count = 0
 
         # Pre-allocated single-byte buffers: avoid per-call list allocation in command()/data()
         self._cmd_buf = bytearray(1)
@@ -95,7 +86,8 @@ class ST7796S:
         self._caset_data = bytearray(4)
         self._raset_data = bytearray(4)
 
-        # Set to True by _recover() so LcdDisplay.maybe_run_maintenance() can force a full frame
+        # Set to True by _recover() so the LcdDisplay wrapper can force a full
+        # frame on the next render call to resync after a reset.
         self.reinit_occurred = False
 
         self._init_gpio()
@@ -164,8 +156,6 @@ class ST7796S:
         time.sleep(0.12)
         logger.info("Display init: DISPON done")
 
-        self.set_window(0, 0, self.width - 1, self.height - 1)
-
         if first_boot:
             GPIO.output(self.bl, GPIO.HIGH)
             # Diagnostic: red fill to verify display hardware is responding
@@ -175,118 +165,12 @@ class ST7796S:
             logger.info("Display init: filling BLACK")
             self._fill(0x0000)
 
-        now = time.monotonic()
-        self._last_light_reinit = now
-        self._last_full_reinit = now
-        self._last_health_check = now
+        # On non-first-boot (recovery), the caller (_recover) sets
+        # reinit_occurred = True so the next render entry point forces
+        # a full frame. We don't leave a dangling set_window/RAMWR here.
+
         self._consecutive_failures = 0
         logger.info("Display initialized")
-
-    def _light_reinit(self):
-        """Reaffirm critical controller registers without sleep/wake transitions.
-
-        Re-sends all stateless register-write commands (including extended
-        panel config) that correct potential drift without triggering display
-        blanking.  SLPOUT, NORON, and DISPON are intentionally omitted — they
-        are no-ops on an already-awake display but can cause brief visual
-        artifacts on some ST7796S modules.
-        """
-        try:
-            self.command(COLMOD)
-            self.data(0x55)
-            self.command(MADCTL)
-            self.data(0x48)
-            self.command(INVON)
-            self.set_window(0, 0, self.width - 1, self.height - 1)
-            self._last_light_reinit = time.monotonic()
-            logger.info("Display light re-init complete")
-        except Exception as e:
-            logger.warning(f"Light re-init failed: {e}")
-            self._recover()
-
-    def _full_reinit(self):
-        """Full re-init with hardware reset — recovers from any controller state."""
-        try:
-            self._init_display()
-            self._last_full_reinit = time.monotonic()
-            logger.info("Display full re-init complete")
-        except Exception as e:
-            logger.error(f"Full re-init failed: {e}")
-            self._recover()
-
-    def _check_health(self) -> bool:
-        """Read display status register to verify controller state.
-
-        Returns True if healthy, False if re-init is needed.
-        Some LCD modules don't support SPI readback (MISO not functional or
-        protocol incompatible). If we get all-zero responses 3 times in a row,
-        we disable readback and rely solely on periodic re-init.
-        """
-        if not self._health_check_supported:
-            self._last_health_check = time.monotonic()
-            return True
-
-        try:
-            self.command(RDDST)
-            GPIO.output(self.dc, GPIO.HIGH)
-            # Read 5 bytes: 1 dummy + 4 status bytes
-            status = self.spi.xfer2([0x00] * 5)
-            self._last_health_check = time.monotonic()
-
-            # Detect non-functional readback: all zeros means the module
-            # doesn't support SPI reads (common on many cheap SPI LCD boards)
-            if all(b == 0 for b in status):
-                self._health_check_zero_count += 1
-                if self._health_check_zero_count >= 3:
-                    logger.debug("Display status readback returns all zeros — "
-                                 "disabling RDDST health checks, relying on periodic re-init")
-                    self._health_check_supported = False
-                return True  # assume healthy since display was working
-
-            # Got real data — reset zero counter
-            self._health_check_zero_count = 0
-
-            # Status byte 1 (index 1): bit 2 = display on, bit 4 = normal mode
-            st1 = status[1]
-            display_on = bool(st1 & 0x04)
-            normal_mode = bool(st1 & 0x10)
-
-            if not display_on or not normal_mode:
-                logger.warning(f"Display health check failed: status={[hex(b) for b in status]}, "
-                               f"display_on={display_on}, normal_mode={normal_mode}")
-                return False
-
-            logger.debug(f"Display health OK: status={[hex(b) for b in status]}")
-            return True
-        except Exception as e:
-            logger.warning(f"Display health check read failed: {e}")
-            return False
-
-    def _periodic_maintenance(self) -> bool:
-        """Run periodic health checks and re-initialization.
-
-        Returns True if a re-init occurred (caller should force a full frame).
-        """
-        now = time.monotonic()
-
-        # Health check every 60 seconds
-        if now - self._last_health_check >= _HEALTH_CHECK_INTERVAL_SEC:
-            if not self._check_health():
-                logger.warning("Health check triggered re-init")
-                self._full_reinit()
-                return True
-
-        # Full re-init every 60 minutes
-        if now - self._last_full_reinit >= _FULL_REINIT_INTERVAL_SEC:
-            self._full_reinit()
-            return True
-
-        # Light re-init every 15 minutes
-        if now - self._last_light_reinit >= _LIGHT_REINIT_INTERVAL_SEC:
-            self._light_reinit()
-            return True
-
-        return False
 
     def _recover(self):
         """Attempt to recover SPI bus and display from a failed state."""
@@ -294,7 +178,7 @@ class ST7796S:
         try:
             self.spi.close()
         except Exception:
-            pass
+            logger.debug("SPI close during recovery failed", exc_info=True)
 
         time.sleep(0.1)
 
@@ -307,8 +191,11 @@ class ST7796S:
             self._init_display()
             self.reinit_occurred = True  # signal LcdDisplay to force a full frame
             logger.info("SPI/display recovery successful")
-        except Exception as e:
-            logger.error(f"Recovery failed: {e}")
+        except Exception:
+            # Leave reinit_occurred False; the next display_raw call will fail
+            # again, increment _consecutive_failures, and re-enter _recover().
+            # Eventually the renderer's _EXIT_AFTER_ERRORS escalation will fire.
+            logger.exception("Recovery failed; will retry on next SPI failure")
 
     def _fill(self, color: int):
         """Fill the entire screen with a solid color (RGB565)."""
@@ -375,21 +262,13 @@ class ST7796S:
             logger.error(f"SPI region write failed ({self._consecutive_failures}x): {e}")
             self._recover()
 
-    def maybe_run_maintenance(self) -> bool:
-        """Run periodic maintenance if any interval has elapsed.
-
-        Call this between frames from the main loop, NOT during frame writes.
-        Returns True if a re-init occurred.
-        """
-        return self._periodic_maintenance()
-
     def close(self):
         """Properly shut down the display with robust error handling."""
         # Backlight off first — immediate visual feedback
         try:
             GPIO.output(self.bl, GPIO.LOW)
         except Exception:
-            pass
+            logger.debug("Backlight-off during shutdown failed", exc_info=True)
 
         # Clear screen (single fill, IPS panels don't ghost)
         try:
@@ -398,40 +277,40 @@ class ST7796S:
             GPIO.output(self.dc, GPIO.HIGH)
             self.spi.writebytes2(black_screen)
             time.sleep(0.05)
-        except Exception as e:
-            logger.debug(f"Screen clear during shutdown failed: {e}")
+        except Exception:
+            logger.debug("Screen clear during shutdown failed", exc_info=True)
 
         # Display off command
         try:
             self.command(DISPOFF)
             time.sleep(0.05)
         except Exception:
-            pass
+            logger.debug("DISPOFF during shutdown failed", exc_info=True)
 
         # Sleep mode
         try:
             self.command(SLPIN)
             time.sleep(0.12)
         except Exception:
-            pass
+            logger.debug("SLPIN during shutdown failed", exc_info=True)
 
         # Hardware reset — guarantees known state for next startup
         try:
             GPIO.output(self.rst, GPIO.LOW)
             time.sleep(0.05)
         except Exception:
-            pass
+            logger.debug("Reset-low during shutdown failed", exc_info=True)
 
         # Release hardware resources
         try:
             self.spi.close()
         except Exception:
-            pass
+            logger.debug("SPI close during shutdown failed", exc_info=True)
 
         try:
             GPIO.cleanup()
         except Exception:
-            pass
+            logger.debug("GPIO cleanup during shutdown failed", exc_info=True)
 
         logger.info("Display shut down cleanly")
 
@@ -515,24 +394,22 @@ class LcdDisplay:
         self._preview_frame_count = 0
 
     def reinit(self):
-        """Re-initialize the display hardware (called by main loop on persistent errors)."""
+        """Re-initialize the display hardware (called by render thread on persistent errors)."""
         if self.driver:
-            self.driver._full_reinit()
+            self.driver._recover()
         self.force_full_frame()
 
-    def maybe_run_maintenance(self):
-        """Run periodic display maintenance if due (call between frames).
+    def _resync_after_reinit_if_needed(self):
+        """Force a full frame if a recovery was triggered since the last render.
 
-        Forces a full frame on the next update if a re-init occurred, so the
-        display state is guaranteed to be in sync with _frame_buf.
+        Called at the top of every render entry point (update_with_telemetry,
+        render_crew_view) so that after _recover() runs in response to an SPI
+        error, the next frame goes out as a full rewrite — guaranteeing the
+        display matches _frame_buf again.
         """
-        if self.driver:
-            if self.driver.maybe_run_maintenance():
-                self.force_full_frame()
-            # Also pick up reinit_occurred set by _recover() during SPI error handling
-            if self.driver.reinit_occurred:
-                self.driver.reinit_occurred = False
-                self.force_full_frame()
+        if self.driver and self.driver.reinit_occurred:
+            self.driver.reinit_occurred = False
+            self.force_full_frame()
 
     def display_region(self, x0: int, y0: int, x1: int, y1: int):
         """Send a rectangular region from _frame_buf_np to the display."""
@@ -808,6 +685,7 @@ class LcdDisplay:
 
         Returns True if a frame was sent (data changed), False if cached.
         """
+        self._resync_after_reinit_if_needed()
         key = f"{astros_data.count}|" + "|".join(
             f"{c.name}:{c.craft}" for c in astros_data.crew
         )
@@ -1272,6 +1150,8 @@ class LcdDisplay:
         if not self.frames_generated:
             logger.warning("Frames not yet generated")
             return
+
+        self._resync_after_reinit_if_needed()
 
         # Determine current globe frame (time-based, decoupled from FPS)
         elapsed = time.time() - self._rotation_start_time

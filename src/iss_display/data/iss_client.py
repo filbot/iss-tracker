@@ -57,7 +57,7 @@ class ISSClient:
         try:
             self._session.close()
         except Exception:
-            pass
+            logger.debug("ISS session close failed", exc_info=True)
         self._session = requests.Session()
         logger.info("HTTP session recycled")
 
@@ -90,35 +90,45 @@ class ISSClient:
         raise ISSFetchError("; ".join(errors))
 
     def _parse_response(self, data: dict) -> ISSFix:
-        # N2YO: {"positions": [{"satlatitude": ..., "satlongitude": ..., "sataltitude": ..., "timestamp": ...}]}
-        if "positions" in data:
-            pos = data["positions"][0]
-            return ISSFix(
-                latitude=float(pos["satlatitude"]),
-                longitude=float(pos["satlongitude"]),
-                altitude_km=_coerce_optional(pos.get("sataltitude")),
-                velocity_kmh=None,  # N2YO does not provide velocity
-                timestamp=float(pos.get("timestamp", 0.0)),
-            )
+        if not isinstance(data, dict):
+            raise ISSFetchError(f"expected JSON object, got {type(data).__name__}")
 
-        # wheretheiss.at: {"latitude": ..., "longitude": ..., "altitude": ..., "velocity": ..., "timestamp": ...}
-        if "iss_position" in data:
+        try:
+            # N2YO: {"positions": [{"satlatitude": ..., "satlongitude": ..., ...}]}
+            if "positions" in data:
+                positions = data["positions"]
+                if not isinstance(positions, list) or not positions:
+                    raise ISSFetchError("N2YO response: 'positions' is empty or not a list")
+                pos = positions[0]
+                return ISSFix(
+                    latitude=float(pos["satlatitude"]),
+                    longitude=float(pos["satlongitude"]),
+                    altitude_km=_coerce_optional(pos.get("sataltitude")),
+                    velocity_kmh=None,  # N2YO does not provide velocity
+                    timestamp=float(pos.get("timestamp", 0.0)),
+                )
+
             # open-notify.org legacy format (kept for any custom ISS_API_URL that uses it)
+            if "iss_position" in data:
+                iss_pos = data["iss_position"]
+                return ISSFix(
+                    latitude=float(iss_pos["latitude"]),
+                    longitude=float(iss_pos["longitude"]),
+                    altitude_km=None,
+                    velocity_kmh=None,
+                    timestamp=float(data.get("timestamp", 0.0)),
+                )
+
+            # wheretheiss.at: {"latitude": ..., "longitude": ..., "altitude": ..., "velocity": ..., "timestamp": ...}
             return ISSFix(
-                latitude=float(data["iss_position"]["latitude"]),
-                longitude=float(data["iss_position"]["longitude"]),
-                altitude_km=None,
-                velocity_kmh=None,
+                latitude=float(data["latitude"]),
+                longitude=float(data["longitude"]),
+                altitude_km=_coerce_optional(data.get("altitude")),
+                velocity_kmh=_coerce_optional(data.get("velocity")),
                 timestamp=float(data.get("timestamp", 0.0)),
             )
-
-        return ISSFix(
-            latitude=float(data["latitude"]),
-            longitude=float(data["longitude"]),
-            altitude_km=_coerce_optional(data.get("altitude")),
-            velocity_kmh=_coerce_optional(data.get("velocity")),
-            timestamp=float(data.get("timestamp", 0.0)),
-        )
+        except (KeyError, TypeError, ValueError) as e:
+            raise ISSFetchError(f"malformed response: {e}") from e
 
 
 def _coerce_optional(value: Optional[float]) -> Optional[float]:
