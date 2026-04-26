@@ -7,6 +7,7 @@ import gc
 import logging
 import os
 import socket
+import subprocess
 import sys
 import time
 import signal
@@ -53,6 +54,10 @@ _RENDER_STALE_SEC = 10.0
 # leaving GC enabled (which would trigger unpredictable collections
 # during render-critical sections).
 _GC_INTERVAL_SEC = 1800.0  # 30 minutes
+
+# Shutdown gesture: N toggle transitions within WINDOW seconds
+_SHUTDOWN_TOGGLES = 5
+_SHUTDOWN_WINDOW_SEC = 10.0
 
 
 def configure_logging(level: str) -> None:
@@ -305,6 +310,8 @@ class ViewToggle:
         self._current_view = self.ISS_VIEW
         self._prev_view = self.ISS_VIEW
 
+        self._toggle_times: deque = deque(maxlen=_SHUTDOWN_TOGGLES)
+
         if not preview_mode and _HW_AVAILABLE:
             # GPIO.setmode already called by ST7796S._init_gpio() before us
             GPIO.setup(self._pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -326,6 +333,17 @@ class ViewToggle:
             self._current_view = self.CREW_VIEW if pin_state else self.ISS_VIEW
         except Exception as e:
             logger.warning("Toggle switch read failed: %s", e)
+
+        if self._current_view != self._prev_view:
+            now = time.monotonic()
+            self._toggle_times.append(now)
+            if (len(self._toggle_times) == _SHUTDOWN_TOGGLES and
+                    now - self._toggle_times[0] <= _SHUTDOWN_WINDOW_SEC):
+                logger.warning(
+                    "Shutdown gesture detected (%d toggles in %.1fs) — shutting down",
+                    _SHUTDOWN_TOGGLES, now - self._toggle_times[0],
+                )
+                subprocess.run(["sudo", "shutdown", "-h", "now"])
 
         return self._current_view
 
