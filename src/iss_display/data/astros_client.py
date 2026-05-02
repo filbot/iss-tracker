@@ -1,4 +1,4 @@
-"""Client for the People in Space API (open-notify.org)."""
+"""Client for the People in Space API (corquaid/international-space-station-APIs)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_ASTROS_URL = "http://api.open-notify.org/astros.json"
+_ASTROS_URL = "https://corquaid.github.io/international-space-station-APIs/JSON/people-in-space.json"
 _TIMEOUT = (3.05, 8)
 _REFRESH_INTERVAL = 300.0  # 5 minutes
 _RETRY_AFTER_FAILURE = 60.0  # back off to this cadence after a failed fetch
@@ -32,7 +32,7 @@ class AstrosData:
 
 
 class AstrosClient:
-    """Fetches current astronauts in space from open-notify.org.
+    """Fetches current astronauts in space from corquaid/international-space-station-APIs.
 
     Runs a background thread that refreshes every ~5 minutes.  Callers use
     ``get_astros()`` for an instant, non-blocking read of the cached value —
@@ -90,9 +90,9 @@ class AstrosClient:
 
             crew = []
             for p in people:
-                if not isinstance(p, dict) or "name" not in p or "craft" not in p:
+                if not isinstance(p, dict) or "name" not in p or "spacecraft" not in p:
                     raise ValueError(f"malformed crew entry: {p!r}")
-                crew.append(CrewMember(name=p["name"], craft=p["craft"]))
+                crew.append(CrewMember(name=p["name"], craft=p["spacecraft"]))
 
             new_data = AstrosData(
                 count=data.get("number", len(crew)),

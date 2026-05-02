@@ -703,26 +703,41 @@ class LcdDisplay:
     def _draw_label_value_row(self, draw, labels, values,
                               lbl_font, val_font,
                               label_y, value_y, margin, color):
-        """Draw evenly-spaced label/value columns, center-aligned to each other."""
+        """Draw label/value columns with equal gaps between edges.
+
+        First column is anchored to the left margin and the last to the right;
+        any columns in between are spaced so the gap between adjacent edges
+        is uniform, which keeps wide and narrow columns from crowding.
+        """
         W = self.width
         n = len(labels)
-        for i, (lbl, val) in enumerate(zip(labels, values)):
+        if n == 0:
+            return
+
+        col_dims = []
+        for lbl, val in zip(labels, values):
             lbl_w = draw.textbbox((0, 0), lbl, font=lbl_font)[2]
             val_w = draw.textbbox((0, 0), val, font=val_font)[2]
-            col_w = max(lbl_w, val_w)
+            col_dims.append((max(lbl_w, val_w), lbl_w, val_w))
 
-            # Anchor the column (using the wider element): left / center / right
-            if i == 0:
-                cx = margin + 2
-            elif i == n - 1:
-                cx = W - margin - 2 - col_w
-            else:
-                cx = (W - col_w) // 2
+        left_edge = margin + 2
+        right_edge = W - margin - 2
 
-            # Center both label and value within the column
+        if n == 1:
+            cxs = [(W - col_dims[0][0]) // 2]
+        else:
+            total_col_w = sum(c[0] for c in col_dims)
+            gap = max(0.0, (right_edge - left_edge - total_col_w) / (n - 1))
+            cxs = []
+            x = float(left_edge)
+            for col_w, _, _ in col_dims:
+                cxs.append(int(round(x)))
+                x += col_w + gap
+
+        for i, ((col_w, lbl_w, val_w), lbl, val) in enumerate(zip(col_dims, labels, values)):
+            cx = cxs[i]
             lx = cx + (col_w - lbl_w) // 2
             vx = cx + (col_w - val_w) // 2
-
             draw.text((lx, label_y), lbl, fill=color, font=lbl_font)
             draw.text((vx, value_y), val, fill=color, font=val_font)
 
@@ -825,7 +840,7 @@ class LcdDisplay:
         footer_labels = []
         footer_values = []
         for craft_name in craft_order:
-            footer_labels.append(f"{craft_name.upper()} CREW")
+            footer_labels.append(craft_name.upper())
             footer_values.append(str(len(crafts[craft_name])))
         footer_labels.append("MSG")
         footer_values.append("SUCCESS")
