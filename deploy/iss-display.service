@@ -25,6 +25,7 @@ MemoryMax=250M
 MemoryHigh=200M
 
 # Graceful shutdown
+TimeoutStartSec=1800
 TimeoutStopSec=10
 KillSignal=SIGTERM
 
