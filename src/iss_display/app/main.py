@@ -711,6 +711,10 @@ def run_loop(settings: Settings) -> None:
     # With pre-allocated arrays, reference counting handles most cleanup.
     gc.disable()
     gc.collect()  # one clean sweep before starting
+    # Move everything alive after startup (modules, frame cache, fonts) into
+    # the permanent generation, so the periodic collect below only scans
+    # objects created since.
+    gc.freeze()
     logger.info("Automatic GC disabled")
     last_gc_time = time.monotonic()
 
