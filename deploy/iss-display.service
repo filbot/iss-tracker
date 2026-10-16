@@ -1,7 +1,8 @@
 [Unit]
 Description=ISS Tracker Display
-After=network-online.target
-Wants=network-online.target
+# No network-online.target ordering: user units can't see system targets,
+# so it never had an effect. The app starts offline and shows NO LINK
+# until its first successful fetch.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
