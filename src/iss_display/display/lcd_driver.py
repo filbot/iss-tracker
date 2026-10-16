@@ -47,6 +47,10 @@ _MAX_RECOVERY_ATTEMPTS = 3
 # eliminate visible angular jumps under transient stalls.
 _FRAME_RESYNC_THRESHOLD = 4
 
+# Preview mode keeps a rolling set of this many PNGs instead of writing a
+# new file forever.
+_MAX_PREVIEW_FILES = 100
+
 # Telemetry older than this is flagged on the HUD: the OVER cell switches to
 # an amber NO LINK indicator and the LAST readout goes humanized (12m / 47h).
 _STALE_DATA_SEC = 600.0
@@ -366,12 +370,11 @@ class LcdDisplay:
 
         self.driver: Optional[ST7796S] = None
         if not settings.preview_only and HARDWARE_AVAILABLE:
-            try:
-                self.driver = ST7796S(settings)
-                logger.info("Hardware display initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize hardware display: {e}")
-                self.driver = None
+            # Let init failures propagate: falling back to preview mode here
+            # ran the service headless with a dark screen while it filled the
+            # SD card with preview PNGs. Exiting lets systemd retry instead.
+            self.driver = ST7796S(settings)
+            logger.info("Hardware display initialized")
         else:
             if not HARDWARE_AVAILABLE:
                 logger.warning("Hardware libraries not found. Running in preview mode.")
@@ -449,8 +452,10 @@ class LcdDisplay:
         # Crew view setup
         self._init_crew_view()
 
-        # Preview frame counter
+        # Preview counters: frames rendered, and PNGs written (picks the
+        # rolling file slot)
         self._preview_frame_count = 0
+        self._preview_saves = 0
 
     def reinit(self):
         """Re-initialize the display hardware (called by render thread on persistent errors)."""
@@ -1593,7 +1598,9 @@ class LcdDisplay:
             b = (arr & 0x1F).astype(np.uint8) * 8
             rgb = np.stack([r, g, b], axis=-1)
             img = Image.fromarray(rgb)
-            preview_path = self.settings.preview_dir / f"frame_{self._preview_frame_count:06d}.png"
+            slot = self._preview_saves % _MAX_PREVIEW_FILES
+            self._preview_saves += 1
+            preview_path = self.settings.preview_dir / f"frame_{slot:03d}.png"
             img.save(preview_path)
             logger.debug(f"Preview saved: {preview_path}")
         except Exception as e:
