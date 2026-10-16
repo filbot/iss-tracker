@@ -230,9 +230,9 @@ class ST7796S:
             self.reinit_occurred = True  # signal LcdDisplay to force a full frame
             logger.info("SPI/display recovery successful")
         except Exception:
-            # Leave reinit_occurred False; the next display_raw call will fail
-            # again, increment _consecutive_failures, and re-enter _recover().
-            # Eventually the renderer's _EXIT_AFTER_ERRORS escalation will fire.
+            # Leave reinit_occurred False. The caller re-raises the original
+            # SPI error, so the renderer's _REINIT/_EXIT_AFTER_ERRORS
+            # escalation counts it and eventually exits for a systemd restart.
             logger.exception("Recovery failed; will retry on next SPI failure")
 
     def _fill(self, color: int):
@@ -282,6 +282,9 @@ class ST7796S:
             self._consecutive_failures += 1
             logger.error(f"SPI write failed ({self._consecutive_failures}x): {e}")
             self._recover()
+            # Propagate so the renderer's error escalation sees the failure;
+            # swallowing it here kept a permanently broken bus "healthy".
+            raise
 
     def display_region(self, x0: int, y0: int, x1: int, y1: int, frame_buf_np: "np.ndarray"):
         """Send a rectangular sub-region from frame_buf_np to the display.
@@ -299,6 +302,7 @@ class ST7796S:
             self._consecutive_failures += 1
             logger.error(f"SPI region write failed ({self._consecutive_failures}x): {e}")
             self._recover()
+            raise
 
     def close(self):
         """Properly shut down the display with robust error handling."""
