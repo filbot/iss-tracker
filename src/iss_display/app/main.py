@@ -596,20 +596,11 @@ class DisplayRenderer(threading.Thread):
 
     def _run_iss_frame(self, lcd, frame_period):
         """Render one ISS globe frame with precise timing."""
-        # Wait for the next globe frame boundary using hybrid sleep:
-        # coarse time.sleep() for most of the wait, then busy-wait
-        # for the final ms to get sub-ms precision on the Pi 3.
-        now = time.monotonic()
-        elapsed = now - lcd._rotation_start_time
-        time_in_frame = elapsed % frame_period
-        time_to_next = frame_period - time_in_frame
-
-        if time_to_next > 0.004:
-            time.sleep(time_to_next - 0.002)
-
-        target = now + time_to_next
-        while time.monotonic() < target:
-            pass  # busy-wait for precise frame alignment
+        # Sleep to the next globe frame boundary. No busy-wait for sub-ms
+        # alignment: the panel has no TE sync and the SPI write itself takes
+        # 17+ ms, so the spin only burned CPU on a thermally throttled Pi.
+        elapsed = time.monotonic() - lcd._rotation_start_time
+        time.sleep(frame_period - (elapsed % frame_period))
 
         # Read latest telemetry (brief lock)
         with self._lock:
