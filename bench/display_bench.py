@@ -36,12 +36,19 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+
+from iss_display.display.lcd_driver import globe_cache_stem  # noqa: E402
+from iss_display.theme import THEME  # noqa: E402
+
 WIDTH, HEIGHT = 320, 480
 FRAME_BYTES = WIDTH * HEIGHT * 2
-CACHE = REPO / "var/frame_cache/globe_240f_rgb565_320x480.npy"
+# Same cache the app writes, keyed on the current theme.toml globe settings
+CACHE = REPO / "var/frame_cache" / f"{globe_cache_stem(WIDTH, HEIGHT)}_rgb565.npy"
+NUM_FRAMES = THEME.globe.num_frames
 
-# Globe disc geometry — must match theme.toml globe.scale = 0.70
-GLOBE_SIZE = int(min(WIDTH, HEIGHT) * 0.70)          # 224
+# Globe disc geometry, from theme.toml globe.scale like the app
+GLOBE_SIZE = int(min(WIDTH, HEIGHT) * THEME.globe.scale)
 GX0 = (WIDTH - GLOBE_SIZE) // 2
 GY0 = (HEIGHT - GLOBE_SIZE) // 2
 DISC_BYTES = GLOBE_SIZE * GLOBE_SIZE * 2
@@ -91,7 +98,7 @@ def bench_cpu() -> None:
         print(f"  loaded real frame cache: {frames.shape} {frames.dtype}")
     else:
         print("  frame cache missing — using synthetic frames")
-        frames = np.random.randint(0, 65535, (240, HEIGHT, WIDTH), dtype=np.uint16).astype(">u2")
+        frames = np.random.randint(0, 65535, (NUM_FRAMES, HEIGHT, WIDTH), dtype=np.uint16).astype(">u2")
 
     frame_buf = bytearray(FRAME_BYTES)
     fb = np.frombuffer(frame_buf, dtype=">u2").reshape(HEIGHT, WIDTH)
@@ -242,7 +249,7 @@ def bench_spi(speeds_mhz: list[float], n_frames: int, hold_sec: float) -> None:
         print(f"  streaming real globe frames: {frames.shape}")
     else:
         print("  frame cache missing — synthetic noise frames")
-        frames = np.random.randint(0, 65535, (240, HEIGHT, WIDTH),
+        frames = np.random.randint(0, 65535, (NUM_FRAMES, HEIGHT, WIDTH),
                                    dtype=np.uint16).astype(">u2")
     nf = frames.shape[0]
     full_bufs = [np.ascontiguousarray(frames[i]).tobytes() for i in range(0, nf, nf // 24)]
