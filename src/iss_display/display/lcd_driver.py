@@ -1125,12 +1125,12 @@ class LcdDisplay:
         frames are never all held at once (that peaked at ~221 MB at 480
         frames on a 1 GB Pi 3, past the service's MemoryHigh).
         """
+        import importlib.util
         import multiprocessing as mp
 
-        # Verify cartopy is available before spawning workers
-        try:
-            import cartopy  # noqa: F401
-        except ImportError:
+        # Verify cartopy is available before spawning workers, without
+        # importing it into this process (only the workers need it)
+        if importlib.util.find_spec("cartopy") is None:
             raise ImportError(
                 "Cartopy and matplotlib are required for frame generation. "
                 "Render the cache on a development machine with "
