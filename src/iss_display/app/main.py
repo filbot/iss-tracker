@@ -431,12 +431,14 @@ class WatchdogPinger(threading.Thread):
 
     def __init__(self, get_status):
         super().__init__(daemon=True, name="sd-watchdog")
-        self._stop = threading.Event()
+        # Not named _stop: that would shadow Thread._stop(), which join()
+        # and is_alive() call internally.
+        self._stop_evt = threading.Event()
         # callable returning (main_loop_age_sec, render_age_sec)
         self._get_status = get_status
 
     def run(self) -> None:
-        while not self._stop.wait(self.PING_INTERVAL_SEC):
+        while not self._stop_evt.wait(self.PING_INTERVAL_SEC):
             try:
                 main_age, render_age = self._get_status()
             except Exception:
@@ -451,7 +453,7 @@ class WatchdogPinger(threading.Thread):
                 )
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_evt.set()
 
 
 class HudComposer(threading.Thread):
