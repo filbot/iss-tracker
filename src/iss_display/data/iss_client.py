@@ -78,10 +78,17 @@ class ISSClient:
                 response.raise_for_status()
                 return self._parse_response(response.json())
             except Exception as e:
-                logger.debug(f"API {api_url} failed: {e}")
-                errors.append(f"{api_url}: {e}")
+                # requests repeats the URL in its error text, so scrub the
+                # N2YO key from both before anything reaches the journal.
+                error = self._redact(f"{api_url}: {e}")
+                logger.debug("API failed: %s", error)
+                errors.append(error)
 
         raise ISSFetchError("; ".join(errors))
+
+    def _redact(self, text: str) -> str:
+        key = self._settings.n2yo_api_key
+        return text.replace(key, "***") if key else text
 
     def _parse_response(self, data: dict) -> ISSFix:
         if not isinstance(data, dict):
