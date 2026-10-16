@@ -405,8 +405,9 @@ class LcdDisplay:
         self.num_frames = THEME.globe.num_frames
         self.frames_generated = False
 
-        # Time-based rotation (decouples speed from frame count)
-        self._rotation_start_time: float = time.time()
+        # Time-based rotation (decouples speed from frame count). Monotonic,
+        # so an NTP step can't jump the globe or stall the frame-aligned wait.
+        self._rotation_start_time: float = time.monotonic()
         self._rotation_period: float = THEME.globe.rotation_period_sec
 
         # Cache directory
@@ -1431,7 +1432,7 @@ class LcdDisplay:
         # Hybrid frame indexing: advance by one frame per render, but resync
         # to wall-clock if we've fallen too far behind (long stall recovery).
         # Eliminates visible angular skips when a render goes over budget.
-        elapsed = time.time() - self._rotation_start_time
+        elapsed = time.monotonic() - self._rotation_start_time
         rotation_progress = (elapsed % self._rotation_period) / self._rotation_period
         target_frame = int(rotation_progress * self.num_frames) % self.num_frames
         prev_frame = self._prev_frame_idx

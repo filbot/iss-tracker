@@ -101,11 +101,13 @@ class ISSOrbitInterpolator:
         self.client = iss_client
         self.api_interval = api_interval
 
+        # Fetch times are time.monotonic(): the Pi has no RTC, and wall-clock
+        # steps when NTP syncs after boot would corrupt every interval below.
         self._last_fix: Optional[ISSFix] = None
-        self._last_fetch_time: float = 0.0
+        self._last_fetch_time: Optional[float] = None
 
         self._prev_fix: Optional[ISSFix] = None
-        self._prev_fetch_time: float = 0.0
+        self._prev_fetch_time: Optional[float] = None
 
         # Estimated velocity (degrees per second)
         self._lon_velocity: float = 360.0 / ISS_ORBITAL_PERIOD_SEC
@@ -183,9 +185,10 @@ class ISSOrbitInterpolator:
             logger.debug("Health check: heartbeat stale (%.0fs)",
                          time.monotonic() - self._thread_heartbeat)
             return False
-        if self._last_fetch_time > 0 and time.time() - self._last_fetch_time > _MAX_DATA_AGE_SEC:
+        if (self._last_fetch_time is not None
+                and time.monotonic() - self._last_fetch_time > _MAX_DATA_AGE_SEC):
             logger.debug("Health check: data stale (%.0fs)",
-                         time.time() - self._last_fetch_time)
+                         time.monotonic() - self._last_fetch_time)
             return False
         return True
 
@@ -210,7 +213,8 @@ class ISSOrbitInterpolator:
                 "Fetch thread unhealthy, restarting (restart #%d, failures=%d, data_age=%.0fs)",
                 self._consecutive_restarts,
                 self._consecutive_failures,
-                time.time() - self._last_fetch_time if self._last_fetch_time > 0 else -1,
+                (time.monotonic() - self._last_fetch_time
+                 if self._last_fetch_time is not None else -1),
             )
         self._running = False
         self._stop_evt.set()
@@ -236,8 +240,7 @@ class ISSOrbitInterpolator:
                     timestamp=time.time()
                 )
 
-            now = time.time()
-            dt = now - self._last_fetch_time
+            dt = time.monotonic() - self._last_fetch_time
 
             # Dead-reckon only within a bounded window past the last real fix.
             # data_age_sec below still reports the true age so the HUD and
@@ -260,7 +263,7 @@ class ISSOrbitInterpolator:
                 longitude=new_lon,
                 altitude_km=self._last_fix.altitude_km,
                 velocity_kmh=self._last_fix.velocity_kmh,
-                timestamp=now,
+                timestamp=time.time(),
                 data_age_sec=dt,
             )
 
@@ -268,7 +271,7 @@ class ISSOrbitInterpolator:
         """Perform a single API fetch and update velocity estimates."""
         try:
             fix = self.client.get_fix()
-            now = time.time()
+            now = time.monotonic()
 
             with self._lock:
                 if self._last_fix is not None:
@@ -279,7 +282,7 @@ class ISSOrbitInterpolator:
                 self._last_fetch_time = now
                 self._api_calls += 1
 
-                if self._prev_fix is not None and self._prev_fetch_time > 0:
+                if self._prev_fix is not None and self._prev_fetch_time is not None:
                     dt = now - self._prev_fetch_time
                     if dt > 0.1:
                         dlon = fix.longitude - self._prev_fix.longitude
@@ -609,7 +612,7 @@ class DisplayRenderer(threading.Thread):
         # Wait for the next globe frame boundary using hybrid sleep:
         # coarse time.sleep() for most of the wait, then busy-wait
         # for the final ms to get sub-ms precision on the Pi 3.
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - lcd._rotation_start_time
         time_in_frame = elapsed % frame_period
         time_to_next = frame_period - time_in_frame
@@ -618,7 +621,7 @@ class DisplayRenderer(threading.Thread):
             time.sleep(time_to_next - 0.002)
 
         target = now + time_to_next
-        while time.time() < target:
+        while time.monotonic() < target:
             pass  # busy-wait for precise frame alignment
 
         # Read latest telemetry (brief lock)
