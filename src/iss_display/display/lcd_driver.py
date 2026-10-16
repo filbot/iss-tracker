@@ -938,31 +938,42 @@ class LcdDisplay:
 
         y = line3_y + sp + 2
         line_h = 22
+        sep_h = 12
         bottom_zone = self.height - 40  # reserve space for footer
 
+        # Flatten to rows first so overflow can be decided up front: a
+        # dashed separator between craft groups (not before the first),
+        # then one row per member.
+        rows: list[Optional[tuple[str, str]]] = []  # None = separator
         for ci, craft_name in enumerate(craft_order):
-            # Dashed separator between craft groups (not before the first)
             if ci > 0:
+                rows.append(None)
+            rows.extend((name.upper(), craft_name.upper())
+                        for name in crafts[craft_name])
+
+        # If everything doesn't fit, keep one row free for the "..." marker
+        # so it stays above the footer.
+        total_h = sum(sep_h if r is None else line_h for r in rows)
+        limit = bottom_zone if y + total_h <= bottom_zone else bottom_zone - line_h
+
+        for row in rows:
+            row_h = sep_h if row is None else line_h
+            if y + row_h > limit:
+                draw.text((margin + 2, y), "...",
+                          fill=color, font=self._crew_list_font)
+                break
+            if row is None:
                 self._draw_dashed_line(draw, margin + 2, W - margin - 2,
                                        y, color)
-                y += 12
-
-            members = crafts[craft_name]
-            craft_label = craft_name.upper()
-            bbox = draw.textbbox((0, 0), craft_label, font=self._crew_list_font)
-            craft_w = bbox[2] - bbox[0]
-
-            for name in members:
-                if y + line_h > bottom_zone:
-                    draw.text((margin + 2, y), "...",
-                              fill=color, font=self._crew_list_font)
-                    y += line_h
-                    break
-                draw.text((margin + 2, y), name.upper(),
+            else:
+                name, craft_label = row
+                bbox = draw.textbbox((0, 0), craft_label, font=self._crew_list_font)
+                craft_w = bbox[2] - bbox[0]
+                draw.text((margin + 2, y), name,
                           fill=color, font=self._crew_list_font)
                 draw.text((W - margin - 2 - craft_w, y), craft_label,
                           fill=color, font=self._crew_list_font)
-                y += line_h
+            y += row_h
 
         # ── Section 5: Bottom status bar (labels + values) ──
         footer_line_y = self.height - 38
