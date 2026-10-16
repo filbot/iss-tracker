@@ -4,7 +4,7 @@ A Raspberry Pi display that tracks the International Space Station in real time.
 
 ![The ISS Tracker running in its case, showing the globe over Australia with latitude, longitude, altitude, and speed readouts](docs/iss-tracker.jpg)
 
-**How hard is it?** You'll type a few commands into a terminal and wait for some installs. The screen plugs straight onto the Pi, so there's no wiring unless you add the optional toggle switch. No API keys or accounts are needed.
+**How hard is it?** You'll type a few commands into a terminal and wait for some installs. The screen plugs straight onto the Pi, so there's no wiring unless you add the optional toggle switch. No API keys or accounts are needed. If you've never used a terminal before, read [New to the command line?](#new-to-the-command-line) first.
 
 ## Features
 
@@ -26,6 +26,102 @@ A Raspberry Pi display that tracks the International Space Station in real time.
 | **Power supply** | The **official Raspberry Pi supply** for your model (5.1 V). Generic phone chargers make the globe stutter; see [Power supply](#power-supply) for why. |
 | **Heatsink or fan** *(optional)* | Helps if `vcgencmd get_throttled` shows the Pi slowing itself down from heat. |
 | **Toggle switch** *(optional)* | A latching (on/off) switch wired between GPIO 17 and GND to switch views |
+
+---
+
+## New to the command line?
+
+Everything in Setup happens by typing commands into a terminal on the Pi. If that's new to you, the basics below will get you past the problems people most often hit.
+
+### Opening a terminal
+
+On the Pi's desktop, click the terminal icon in the top bar, or press `Ctrl+Alt+T`. To work from another computer instead, connect over SSH with the username and hostname you chose in Raspberry Pi Imager, for example `ssh pi@raspberrypi.local`.
+
+### Running the commands
+
+Copy one line at a time from the grey boxes, paste it into the terminal, and press Enter. In a terminal, paste is right-click and **Paste**, or `Ctrl+Shift+V`; plain `Ctrl+V` won't work. Wait for the prompt to come back before you run the next line, because some steps take a few minutes.
+
+Commands that start with `sudo` may ask for your password. If one does, nothing shows on screen while you type it, which is normal. Type it and press Enter.
+
+### Knowing where you are
+
+The prompt shows which folder you're in. In `pi@raspberrypi:~/iss-tracker $`, the part after the colon is the folder, and `~` means your home folder. Most commands in this guide only work inside the project folder, so if you're not sure where you are, run:
+
+```bash
+cd ~/iss-tracker
+```
+
+The app runs inside its own Python environment (the `.venv` folder). When it's switched on, the prompt starts with `(.venv)`. If you don't see that, switch it on from inside the project folder:
+
+```bash
+source .venv/bin/activate
+```
+
+### The program is called `iss-display`
+
+The project folder is `iss-tracker`, but the program you run is `iss-display`. Typing `iss-tracker` gives "command not found".
+
+### When a command fails
+
+Read the last screenful of output. A line containing `ERROR`, or one saying something `failed`, means that step didn't finish, and the steps after it won't work until it does. For example, if `pip install -e .` fails, the `iss-display` command never gets created.
+
+### Updating to the latest version
+
+If you downloaded the project a while ago, update it before you try again. Many install problems have already been fixed:
+
+```bash
+cd ~/iss-tracker
+git pull
+source .venv/bin/activate
+pip install -e .
+```
+
+### Starting over
+
+If an install went wrong and you're not sure what state things are in, delete the project folder and download it again. This only removes the app. Your Raspberry Pi OS install and setup steps 1, 2, 3, and 6 stay as they are.
+
+```bash
+cd ~
+rm -rf ~/iss-tracker
+```
+
+Then follow [Setup](#setup) again from [step 4](#4-download-and-install-the-app).
+
+### Looking up an error
+
+This project doesn't offer individual support, but most setup errors have been hit by someone before, and a search or an AI assistant can usually explain them.
+
+In a search engine, search for the most specific error line in quotes, plus a few words about what you were doing. Leave out anything particular to your Pi, like your username or folder path. For example:
+
+```text
+raspberry pi pip install "meson.build" "import numpy as np; print(np.__version__)" failed
+```
+
+To ask an AI assistant such as ChatGPT, Claude, or Gemini, first print your Pi model, operating system, and Python version:
+
+```bash
+cat /proc/device-tree/model; echo; grep PRETTY_NAME /etc/os-release; python3 --version
+```
+
+Then copy the message below, replace each part in square brackets, and paste it into the assistant:
+
+```text
+I'm setting up the ISS Tracker Display from https://github.com/filbot/iss-tracker on a Raspberry Pi. I'm new to Linux and the command line, so please give me exact commands to copy and explain what each one does.
+
+My system:
+[paste the output of the command above]
+
+I was following this step of the README:
+[for example: step 4, Download and install the app]
+
+I ran this command:
+[paste the command]
+
+And got this output:
+[paste the complete output, not just the last line]
+
+What went wrong, and how do I fix it?
+```
 
 ---
 
@@ -171,8 +267,14 @@ With a latching switch wired between **GPIO 17** and **GND**, closing the switch
 **`pip install -e .` says the folder "does not appear to be a Python project"**
 You're not inside the project folder. Run `cd ~/iss-tracker` first; `ls` there should list `pyproject.toml`.
 
+**`pip install -e .` fails with an error mentioning `meson.build` or `numpy`**
+Your copy is out of date. Older versions also installed the mapping libraries Cartopy and matplotlib, and building those on the Pi fails on some systems. Current versions don't need them. [Update to the latest version](#updating-to-the-latest-version), and if the error comes back, [start over](#starting-over).
+
 **`iss-display: command not found`**
-The venv isn't active in this terminal. Run `cd ~/iss-tracker && source .venv/bin/activate`, then try again.
+The venv isn't active in this terminal. Run `cd ~/iss-tracker && source .venv/bin/activate`, then try again. If it still isn't found, `pip install -e .` probably didn't finish; run it again and check the end of its output.
+
+**`iss-tracker: command not found`**
+The program is called `iss-display`. `iss-tracker` is only the folder name.
 
 **Display doesn't work with a different Waveshare model**
 This code only supports the Waveshare 3.5" RPi LCD (F). Other models, such as the (A), use a different display controller (this code drives the ST7796S on the (F)).
