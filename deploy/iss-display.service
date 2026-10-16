@@ -27,12 +27,9 @@ RestartSteps=5
 RestartMaxDelaySec=60
 
 # Resource limits (requires cgroup_enable=memory in cmdline.txt).
-# Measured on a Pi 3B at 480 frames: steady state is ~186 MB anon (147 MB
-# of it RGB565 frames). A cold cache rebuild adds four ~105-120 MB render
-# workers, so it sits at MemoryHigh and swaps up to ~300 MB, but finishes
-# (~31 min, mostly thermal throttling). The previous 200M/250M limits kept
-# the service permanently in memory.high reclaim, thrashing ~230 MB of
-# swap on the SD card.
+# Measured on a Pi 3B at 480 frames: about 80 MB for the service, 48 MB
+# of it the globe frames. These limits were sized for the old on-device
+# globe build and now only catch a leak.
 MemoryMax=450M
 MemoryHigh=380M
 
