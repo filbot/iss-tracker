@@ -12,13 +12,10 @@ from iss_display.config import Settings
 
 logger = logging.getLogger(__name__)
 
-# Static fallback URLs tried after the primary fails.
-# NOTE: open-notify.org was removed — it is HTTP-only, returns no altitude or
-# velocity, and has been unreliably reachable since early 2026.
-# N2YO is added dynamically in get_fix() when a key is configured.
-FALLBACK_APIS: list[str] = [
-    "http://api.open-notify.org/iss-now.json",
-]
+# The only fallback after the primary is N2YO, added in _build_api_list()
+# when a key is configured. open-notify.org is not used: it is HTTP-only,
+# returns no altitude or velocity, and has been unreliably reachable since
+# early 2026.
 
 # N2YO ISS position endpoint.  Observer coords 0/0/0 are ignored when only
 # the satellite geocoords (satlatitude/satlongitude/sataltitude) are consumed.
@@ -62,7 +59,7 @@ class ISSClient:
 
     def _build_api_list(self) -> list[str]:
         """Return the ordered list of URLs to try, including optional N2YO."""
-        urls = [self._settings.iss_api_url] + FALLBACK_APIS
+        urls = [self._settings.iss_api_url]
         if self._settings.n2yo_api_key:
             urls.append(_N2YO_URL.format(key=self._settings.n2yo_api_key))
         return urls

@@ -686,15 +686,14 @@ class LcdDisplay:
         else:
             lat = telemetry.latitude
             lon = telemetry.longitude
-            alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
-            vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
-
             lat_dir = "N" if lat >= 0 else "S"
             lon_dir = "E" if lon >= 0 else "W"
             lat_val = f"{abs(lat):05.2f}\u00b0{lat_dir}"
             lon_val = f"{abs(lon):06.2f}\u00b0{lon_dir}"
-            alt_val = f"{alt_km:,.0f}"
-            vel_val = f"{vel_kmh:,.0f}"
+            # Some sources (N2YO) omit altitude or velocity: show "--" rather
+            # than a typical value dressed up as a measurement.
+            alt_val = f"{telemetry.altitude_km:,.0f}" if telemetry.altitude_km else "--"
+            vel_val = f"{telemetry.velocity_kmh:,.0f}" if telemetry.velocity_kmh else "--"
             age_val = _format_age(int(telemetry.data_age_sec))
             stale = telemetry.data_age_sec >= _STALE_DATA_SEC
 

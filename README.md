@@ -239,11 +239,10 @@ The app uses free, public APIs. No registration is needed for the default setup.
 | API | Purpose | Key required |
 |-----|---------|:------------:|
 | [Where the ISS at?](https://wheretheiss.at) | ISS position (primary) | No |
-| [Open Notify ISS](http://open-notify.org) | ISS position (fallback) | No |
 | [N2YO](https://www.n2yo.com/api/) | ISS position (fallback) | Yes (free) |
 | [Open Notify Astros](http://open-notify.org) | People in Space | No |
 
-The app tries the primary API first and falls back to the others automatically if it fails. N2YO is only used if you add an API key to `.env`.
+If the primary API fails and you've added an N2YO key to `.env`, the app tries N2YO next. N2YO doesn't report speed, so VEL shows `--` while it's in use.
 
 ---
 
