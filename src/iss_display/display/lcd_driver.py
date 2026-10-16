@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import math
 import threading
@@ -107,6 +109,44 @@ def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
     """Convert an RGB color to a 16-bit RGB565 value (big-endian byte order)."""
     val = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
     return val
+
+
+def _globe_render_cfg() -> dict:
+    """theme.toml globe settings that affect the rendered frames, as a
+    plain picklable dict (passed to the multiprocessing render workers)."""
+    g = THEME.globe
+    return {
+        'background': g.background,
+        'ocean_color': g.ocean_color,
+        'land_color': g.land_color,
+        'land_border_color': g.land_border_color,
+        'land_border_width': g.land_border_width,
+        'coastline_color': g.coastline_color,
+        'coastline_width': g.coastline_width,
+        'grid_color': g.grid_color,
+        'grid_width': g.grid_width,
+        'grid_alpha': g.grid_alpha,
+        'grid_lat_spacing': g.grid_lat_spacing,
+        'grid_lon_spacing': g.grid_lon_spacing,
+    }
+
+
+def globe_cache_stem(width: int, height: int) -> str:
+    """File name stem for the globe frame caches, e.g. globe_480f_1a2b3c4d.
+
+    The hash covers everything that changes the rendered frames, so editing
+    the globe in theme.toml rebuilds the cache instead of silently reusing
+    stale frames.
+    """
+    g = THEME.globe
+    key = {
+        'globe': _globe_render_cfg(),
+        'scale': g.scale,
+        'num_frames': g.num_frames,
+        'size': [width, height],
+    }
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:8]
+    return f"globe_{g.num_frames}f_{digest}"
 
 
 def _rgb_array_to_rgb565(rgb: np.ndarray) -> np.ndarray:
@@ -1024,8 +1064,23 @@ class LcdDisplay:
         """Convert PIL Image to RGB565 bytes for direct display."""
         return _rgb_array_to_rgb565(np.array(image)).astype('>u2').tobytes()
 
+    def _frames_cache_path(self) -> Path:
+        return self.cache_dir / f"{globe_cache_stem(self.width, self.height)}.npz"
+
     def _rgb565_cache_path(self) -> Path:
-        return self.cache_dir / f"globe_{self.num_frames}f_rgb565_{self.width}x{self.height}.npy"
+        return self.cache_dir / f"{globe_cache_stem(self.width, self.height)}_rgb565.npy"
+
+    def _remove_stale_caches(self) -> None:
+        """Delete globe caches from other theme settings (~370 MB each at
+        480 frames, which adds up on an SD card)."""
+        stem = globe_cache_stem(self.width, self.height)
+        for path in self.cache_dir.glob("globe_*"):
+            if not path.name.startswith(stem):
+                try:
+                    path.unlink()
+                    logger.info("Removed stale globe cache: %s", path.name)
+                except OSError as e:
+                    logger.warning("Could not remove stale cache %s: %s", path.name, e)
 
     def _load_rgb565_cache(self) -> bool:
         """Load pre-converted RGB565 frames from disk, skipping PIL entirely.
@@ -1037,7 +1092,7 @@ class LcdDisplay:
         path = self._rgb565_cache_path()
         if not path.exists():
             return False
-        source = self.cache_dir / f"globe_{self.num_frames}f.npz"
+        source = self._frames_cache_path()
         try:
             if source.exists() and source.stat().st_mtime > path.stat().st_mtime:
                 logger.info("RGB565 cache older than globe frame cache, recomputing")
@@ -1089,6 +1144,7 @@ class LcdDisplay:
         try:
             np.save(self._rgb565_cache_path(), stacked)
             logger.info("RGB565 cache saved: %s", self._rgb565_cache_path().name)
+            self._remove_stale_caches()
         except Exception as e:
             logger.warning(f"Failed to save RGB565 cache: {e}")
 
@@ -1109,7 +1165,7 @@ class LcdDisplay:
             self._update_globe_geometry()
             return
 
-        cache_file = self.cache_dir / f"globe_{self.num_frames}f.npz"
+        cache_file = self._frames_cache_path()
 
         if cache_file.exists():
             logger.info("Loading cached Earth frames...")
@@ -1145,22 +1201,7 @@ class LcdDisplay:
                 "then copy var/frame_cache/ to the target device."
             )
 
-        # Serialize globe config as a plain dict so it's picklable
-        g = THEME.globe
-        globe_cfg = {
-            'background': g.background,
-            'ocean_color': g.ocean_color,
-            'land_color': g.land_color,
-            'land_border_color': g.land_border_color,
-            'land_border_width': g.land_border_width,
-            'coastline_color': g.coastline_color,
-            'coastline_width': g.coastline_width,
-            'grid_color': g.grid_color,
-            'grid_width': g.grid_width,
-            'grid_alpha': g.grid_alpha,
-            'grid_lat_spacing': g.grid_lat_spacing,
-            'grid_lon_spacing': g.grid_lon_spacing,
-        }
+        globe_cfg = _globe_render_cfg()
 
         degrees_per_frame = 360 / self.num_frames
         work_args = [
@@ -1192,7 +1233,7 @@ class LcdDisplay:
         try:
             frame_dict = {f'frame_{i}': frame
                           for i, frame in enumerate(self.frame_cache)}
-            np.savez(self.cache_dir / f"globe_{self.num_frames}f.npz", **frame_dict)
+            np.savez(self._frames_cache_path(), **frame_dict)
             logger.info("Frames cached successfully")
         except Exception as e:
             logger.warning(f"Failed to save cache: {e}")
