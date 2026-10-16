@@ -280,6 +280,8 @@ git add theme.toml src/iss_display/assets/globe_frames.npz
 
 Rendering takes about 20 seconds at `110m` on a 12-core Mac, and about 2 minutes at `50m`.
 
+Earlier versions rendered the globe on the Pi and cached it in `var/frame_cache/`. Nothing uses that folder now, so you can delete it after updating.
+
 ### The systemd service
 
 `deploy/iss-display.service` runs the app as a systemd user service. A watchdog restarts the process if it stops responding for 60 seconds, and crashes are retried with a backoff from 5 to 60 seconds. On stop, the app turns off the backlight and releases GPIO.
@@ -328,7 +330,7 @@ iss-tracker/
 │   ├── data/astros_client.py           # People in Space API client
 │   ├── data/geography.py               # Region name lookup
 │   ├── config.py                       # Settings from environment variables
-│   ├── systemd.py                      # sd_notify (ready, watchdog, status)
+│   ├── systemd.py                      # sd_notify (ready, watchdog, stopping)
 │   └── theme.py                        # Theme TOML loader, cascade resolution
 ├── tests/                              # pytest unit tests
 ├── tools/render_globe.py               # Renders the globe frames with Cartopy
@@ -344,7 +346,7 @@ pip install pytest
 pytest
 ```
 
-The tests cover the position interpolator, the ISS API client, and the region lookup. They don't need the display attached.
+The tests cover the position interpolator, the ISS API client, the region lookup, and whether the committed globe frames match `theme.toml`. They don't need the display attached.
 
 ---
 
