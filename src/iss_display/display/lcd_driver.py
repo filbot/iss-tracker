@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -457,10 +458,8 @@ class LcdDisplay:
             gx0, gy0, gx0 + globe_size - 1, gy0 + globe_size - 1,
         )
 
-        # Pre-rendered frame caches. frame_cache (RGB uint8 arrays) only
-        # exists during generation/conversion; render time uses
-        # frame_np_cache (RGB565 big-endian numpy arrays) exclusively.
-        self.frame_cache: List[np.ndarray] = []
+        # Pre-rendered globe frames as RGB565 big-endian numpy arrays: views
+        # into one stacked array loaded from (or built into) the disk cache.
         self.frame_np_cache: List[np.ndarray] = []
         self.num_frames = THEME.globe.num_frames
         self.frames_generated = False
@@ -476,7 +475,6 @@ class LcdDisplay:
 
         # Load or generate globe frames
         self._load_or_generate_frames()
-        self._precompute_rgb565()
 
         # Reusable frame buffer — avoids per-frame allocation
         self._frame_buf = bytearray(self.width * self.height * 2)
@@ -1072,18 +1070,15 @@ class LcdDisplay:
         """Convert PIL Image to RGB565 bytes for direct display."""
         return _rgb_array_to_rgb565(np.array(image)).astype('>u2').tobytes()
 
-    def _frames_cache_path(self) -> Path:
-        return self.cache_dir / f"{globe_cache_stem(self.width, self.height)}.npz"
-
     def _rgb565_cache_path(self) -> Path:
         return self.cache_dir / f"{globe_cache_stem(self.width, self.height)}_rgb565.npy"
 
     def _remove_stale_caches(self) -> None:
-        """Delete globe caches from other theme settings (~370 MB each at
-        480 frames, which adds up on an SD card)."""
-        stem = globe_cache_stem(self.width, self.height)
+        """Delete globe caches from other theme settings and older cache
+        formats (hundreds of MB each, which adds up on an SD card)."""
+        current = self._rgb565_cache_path().name
         for path in self.cache_dir.glob("globe_*"):
-            if not path.name.startswith(stem):
+            if path.name != current:
                 try:
                     path.unlink()
                     logger.info("Removed stale globe cache: %s", path.name)
@@ -1091,20 +1086,11 @@ class LcdDisplay:
                     logger.warning("Could not remove stale cache %s: %s", path.name, e)
 
     def _load_rgb565_cache(self) -> bool:
-        """Load pre-converted RGB565 frames from disk, skipping PIL entirely.
-
-        The conversion takes ~4.5 minutes on a Pi 3, which made every service
-        restart a long blank-screen event; loading the persisted result takes
-        seconds. Returns True on success.
-        """
+        """Load the RGB565 globe frames from disk. Returns True on success."""
         path = self._rgb565_cache_path()
         if not path.exists():
             return False
-        source = self._frames_cache_path()
         try:
-            if source.exists() and source.stat().st_mtime > path.stat().st_mtime:
-                logger.info("RGB565 cache older than globe frame cache, recomputing")
-                return False
             stacked = np.load(path)
             expected = (self.num_frames, self.height, self.width)
             if stacked.dtype != np.dtype('>u2') or stacked.shape != expected:
@@ -1121,81 +1107,23 @@ class LcdDisplay:
             logger.warning(f"Failed to load RGB565 cache: {e}, recomputing")
             return False
 
-    def _precompute_rgb565(self):
-        """Pre-compute RGB565 data for all cached frames and persist to disk.
-
-        Produces big-endian numpy uint16 arrays (for np.copyto frame copies
-        and partial-update region extraction). No-op when the frames were
-        already loaded from the RGB565 disk cache.
-        """
-        if self.frame_np_cache:
-            return
-        logger.info("Pre-computing RGB565 frame data...")
-        # Single stacked big-endian array: per-frame views share this one
-        # backing buffer, and assignment into it converts from native order
-        # exactly once. (np.stack must NOT be used here — it silently
-        # produces native byte order, which would byte-swap on every frame
-        # copy in the render hot path.)
-        stacked = np.empty(
-            (len(self.frame_cache), self.height, self.width), dtype='>u2'
-        )
-        for i, frame in enumerate(self.frame_cache):
-            stacked[i] = _rgb_array_to_rgb565(frame)
-            # Free each source frame as soon as it's converted: holding all of
-            # them alongside the growing stacked array put the peak at
-            # ~2.4 KB/px instead of ~1 KB/px, which at 480 frames would brush
-            # the service's MemoryHigh and re-trigger reclaim thrash.
-            self.frame_cache[i] = None
-        self.frame_np_cache = [stacked[i] for i in range(len(self.frame_cache))]
-        logger.info(f"Pre-computed {len(self.frame_np_cache)} frames")
-
-        try:
-            np.save(self._rgb565_cache_path(), stacked)
-            logger.info("RGB565 cache saved: %s", self._rgb565_cache_path().name)
-            self._remove_stale_caches()
-        except Exception as e:
-            logger.warning(f"Failed to save RGB565 cache: {e}")
-
-        # Free the source frames — render time only touches frame_np_cache,
-        # and the RGB cache holds ~221 MB at 320x480 with 480 frames.
-        self.frame_cache = []
-
     # ─── Frame cache ──────────────────────────────────────────────────────
 
     def _load_or_generate_frames(self):
-        """Load pre-rendered frames from cache or generate them.
-
-        Fast path: a valid RGB565 disk cache skips PIL frame loading and the
-        multi-minute RGB565 conversion entirely.
-        """
-        if self._load_rgb565_cache():
-            self.frames_generated = True
-            self._update_globe_geometry()
-            return
-
-        cache_file = self._frames_cache_path()
-
-        if cache_file.exists():
-            logger.info("Loading cached Earth frames...")
-            try:
-                data = np.load(cache_file)
-                for i in range(self.num_frames):
-                    self.frame_cache.append(data[f'frame_{i}'])
-                self.frames_generated = True
-                # Update globe geometry from first frame
-                self._update_globe_geometry()
-                logger.info(f"Loaded {len(self.frame_cache)} cached frames")
-                return
-            except Exception as e:
-                logger.warning(f"Failed to load cache: {e}, regenerating...")
-
-        self._generate_frames()
+        """Load the globe frames from the RGB565 cache, or render them."""
+        if not self._load_rgb565_cache():
+            self._generate_frames()
+        self._update_globe_geometry()
+        self.frames_generated = True
 
     def _generate_frames(self):
-        """Pre-render all Earth rotation frames using Cartopy.
+        """Render all Earth rotation frames with Cartopy and cache them.
 
         Uses multiprocessing to spread work across CPU cores and 110m
-        resolution features for faster geometry processing.
+        resolution features for faster geometry processing. Each frame is
+        converted to RGB565 as soon as a worker returns it, so the RGB
+        frames are never all held at once (that peaked at ~221 MB at 480
+        frames on a 1 GB Pi 3, past the service's MemoryHigh).
         """
         import multiprocessing as mp
 
@@ -1205,8 +1133,9 @@ class LcdDisplay:
         except ImportError:
             raise ImportError(
                 "Cartopy and matplotlib are required for frame generation. "
-                "Pre-generate frames on a development machine using generate_frames.py, "
-                "then copy var/frame_cache/ to the target device."
+                "Render the cache on a development machine with "
+                "`iss-display --preview-only`, then copy var/frame_cache/ "
+                "to the target device."
             )
 
         globe_cfg = _globe_render_cfg()
@@ -1222,35 +1151,40 @@ class LcdDisplay:
         logger.info(f"Generating {self.num_frames} Earth frames "
                      f"({n_workers} workers, 110m resolution)...")
 
-        self.frame_cache = []
+        # Single stacked big-endian array: per-frame views share this one
+        # backing buffer, and assignment into it converts from native order
+        # exactly once. (np.stack must NOT be used here — it silently
+        # produces native byte order, which would byte-swap on every frame
+        # copy in the render hot path.)
+        stacked = np.empty((self.num_frames, self.height, self.width), dtype='>u2')
         with mp.Pool(n_workers) as pool:
             for i, frame_array in enumerate(
                 pool.imap(self._render_globe_frame_worker, work_args)
             ):
-                self.frame_cache.append(frame_array)
+                stacked[i] = _rgb_array_to_rgb565(frame_array)
                 if (i + 1) % 10 == 0 or (i + 1) == self.num_frames:
                     logger.info(f"  {i+1}/{self.num_frames} frames done")
                     sd_notify(
                         f"EXTEND_TIMEOUT_USEC={_BUILD_TIMEOUT_EXTEND_USEC}\n"
                         f"STATUS=Rendering globe frames {i+1}/{self.num_frames}"
                     )
+        self.frame_np_cache = [stacked[i] for i in range(self.num_frames)]
 
-        self._update_globe_geometry()
-
-        # Save to cache (uncompressed — much faster to write than gzip).
-        # The dict references the worker arrays directly: copying them here
-        # doubled the cold-build peak to ~440 MB at 480 frames, past the
-        # service's MemoryHigh.
-        logger.info("Saving frames to cache...")
+        # Write to a temp name and rename, so a kill mid-write (e.g. a
+        # systemd timeout) can't leave a truncated cache behind.
+        path = self._rgb565_cache_path()
+        tmp = path.with_name(path.name + ".tmp")
+        sd_notify(f"EXTEND_TIMEOUT_USEC={_BUILD_TIMEOUT_EXTEND_USEC}\n"
+                  "STATUS=Saving globe frame cache")
         try:
-            frame_dict = {f'frame_{i}': frame
-                          for i, frame in enumerate(self.frame_cache)}
-            np.savez(self._frames_cache_path(), **frame_dict)
-            logger.info("Frames cached successfully")
+            with open(tmp, "wb") as f:
+                np.save(f, stacked)
+            os.replace(tmp, path)
+            logger.info("RGB565 cache saved: %s", path.name)
+            self._remove_stale_caches()
         except Exception as e:
-            logger.warning(f"Failed to save cache: {e}")
+            logger.warning(f"Failed to save RGB565 cache: {e}")
 
-        self.frames_generated = True
         logger.info("Frame generation complete!")
 
     def _update_globe_geometry(self):
