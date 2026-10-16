@@ -397,10 +397,10 @@ class LcdDisplay:
             gx0, gy0, gx0 + globe_size - 1, gy0 + globe_size - 1,
         )
 
-        # Pre-rendered frame caches. frame_cache (PIL images) only exists
-        # during generation/conversion; render time uses frame_np_cache
-        # (RGB565 big-endian numpy arrays) exclusively.
-        self.frame_cache: List[Image.Image] = []
+        # Pre-rendered frame caches. frame_cache (RGB uint8 arrays) only
+        # exists during generation/conversion; render time uses
+        # frame_np_cache (RGB565 big-endian numpy arrays) exclusively.
+        self.frame_cache: List[np.ndarray] = []
         self.frame_np_cache: List[np.ndarray] = []
         self.num_frames = THEME.globe.num_frames
         self.frames_generated = False
@@ -1074,12 +1074,11 @@ class LcdDisplay:
             (len(self.frame_cache), self.height, self.width), dtype='>u2'
         )
         for i, frame in enumerate(self.frame_cache):
-            img_np = np.array(frame)
-            r = img_np[..., 0].astype(np.uint16)
-            g = img_np[..., 1].astype(np.uint16)
-            b = img_np[..., 2].astype(np.uint16)
+            r = frame[..., 0].astype(np.uint16)
+            g = frame[..., 1].astype(np.uint16)
+            b = frame[..., 2].astype(np.uint16)
             stacked[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-            # Free each PIL frame as soon as it's converted: holding all of
+            # Free each source frame as soon as it's converted: holding all of
             # them alongside the growing stacked array put the peak at
             # ~2.4 KB/px instead of ~1 KB/px, which at 480 frames would brush
             # the service's MemoryHigh and re-trigger reclaim thrash.
@@ -1093,8 +1092,8 @@ class LcdDisplay:
         except Exception as e:
             logger.warning(f"Failed to save RGB565 cache: {e}")
 
-        # Free the PIL source frames — render time only touches frame_np_cache,
-        # and the PIL cache holds ~110 MB at 320x480 with 240 frames.
+        # Free the source frames — render time only touches frame_np_cache,
+        # and the RGB cache holds ~221 MB at 320x480 with 480 frames.
         self.frame_cache = []
 
     # ─── Frame cache ──────────────────────────────────────────────────────
@@ -1117,8 +1116,7 @@ class LcdDisplay:
             try:
                 data = np.load(cache_file)
                 for i in range(self.num_frames):
-                    img_array = data[f'frame_{i}']
-                    self.frame_cache.append(Image.fromarray(img_array))
+                    self.frame_cache.append(data[f'frame_{i}'])
                 self.frames_generated = True
                 # Update globe geometry from first frame
                 self._update_globe_geometry()
@@ -1180,16 +1178,19 @@ class LcdDisplay:
             for i, frame_array in enumerate(
                 pool.imap(self._render_globe_frame_worker, work_args)
             ):
-                self.frame_cache.append(Image.fromarray(frame_array))
+                self.frame_cache.append(frame_array)
                 if (i + 1) % 10 == 0 or (i + 1) == self.num_frames:
                     logger.info(f"  {i+1}/{self.num_frames} frames done")
 
         self._update_globe_geometry()
 
-        # Save to cache (uncompressed — much faster to write than gzip)
+        # Save to cache (uncompressed — much faster to write than gzip).
+        # The dict references the worker arrays directly: copying them here
+        # doubled the cold-build peak to ~440 MB at 480 frames, past the
+        # service's MemoryHigh.
         logger.info("Saving frames to cache...")
         try:
-            frame_dict = {f'frame_{i}': np.array(frame)
+            frame_dict = {f'frame_{i}': frame
                           for i, frame in enumerate(self.frame_cache)}
             np.savez(self.cache_dir / f"globe_{self.num_frames}f.npz", **frame_dict)
             logger.info("Frames cached successfully")

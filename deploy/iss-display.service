@@ -26,10 +26,11 @@ RestartSteps=5
 RestartMaxDelaySec=60
 
 # Resource limits (requires cgroup_enable=memory in cmdline.txt).
-# Steady state is ~120 MB (RGB565 frames + Python); a cold cache rebuild
-# briefly holds PIL frames + RGB565 output together (~300 MB peak). The
-# previous 200M/250M limits kept the service permanently in memory.high
-# reclaim, thrashing ~230 MB of swap on the SD card.
+# At 480 frames the RGB565 frames alone are ~147 MB, and a cold cache
+# rebuild holds ~221 MB of RGB source frames while converting (computed
+# from the frame sizes, not measured). The previous 200M/250M limits kept
+# the service permanently in memory.high reclaim, thrashing ~230 MB of
+# swap on the SD card.
 MemoryMax=450M
 MemoryHigh=380M
 
