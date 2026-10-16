@@ -109,6 +109,18 @@ def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
     return val
 
 
+def _rgb_array_to_rgb565(rgb: np.ndarray) -> np.ndarray:
+    """Convert an (H, W, 3) uint8 RGB array to native-order uint16 RGB565.
+
+    Callers pick the byte order: assigning into a '>u2' array or calling
+    .astype('>u2') converts for the display's big-endian format.
+    """
+    r = rgb[..., 0].astype(np.uint16)
+    g = rgb[..., 1].astype(np.uint16)
+    b = rgb[..., 2].astype(np.uint16)
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+
+
 class ST7796S:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -632,11 +644,7 @@ class LcdDisplay:
             adv = max(1, int(round(font.getlength(ch))))
             img = Image.new('RGB', (adv, tile_h), self._hud_bg)
             ImageDraw.Draw(img).text((0, 0), ch, fill=color, font=font)
-            arr = np.array(img)
-            r = arr[..., 0].astype(np.uint16)
-            g = arr[..., 1].astype(np.uint16)
-            b = arr[..., 2].astype(np.uint16)
-            atlas[ch] = (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)).astype('>u2')
+            atlas[ch] = _rgb_array_to_rgb565(np.array(img)).astype('>u2')
         return atlas
 
     @staticmethod
@@ -1014,12 +1022,7 @@ class LcdDisplay:
     @staticmethod
     def _image_to_rgb565_bytes(image: Image.Image) -> bytes:
         """Convert PIL Image to RGB565 bytes for direct display."""
-        img_np = np.array(image)
-        r = img_np[..., 0].astype(np.uint16)
-        g = img_np[..., 1].astype(np.uint16)
-        b = img_np[..., 2].astype(np.uint16)
-        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        return rgb565.astype('>u2').tobytes()
+        return _rgb_array_to_rgb565(np.array(image)).astype('>u2').tobytes()
 
     def _rgb565_cache_path(self) -> Path:
         return self.cache_dir / f"globe_{self.num_frames}f_rgb565_{self.width}x{self.height}.npy"
@@ -1074,10 +1077,7 @@ class LcdDisplay:
             (len(self.frame_cache), self.height, self.width), dtype='>u2'
         )
         for i, frame in enumerate(self.frame_cache):
-            r = frame[..., 0].astype(np.uint16)
-            g = frame[..., 1].astype(np.uint16)
-            b = frame[..., 2].astype(np.uint16)
-            stacked[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+            stacked[i] = _rgb_array_to_rgb565(frame)
             # Free each source frame as soon as it's converted: holding all of
             # them alongside the growing stacked array put the peak at
             # ~2.4 KB/px instead of ~1 KB/px, which at 480 frames would brush
