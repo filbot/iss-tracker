@@ -7,7 +7,6 @@ import dataclasses
 import gc
 import logging
 import os
-import socket
 import sys
 import time
 import signal
@@ -19,6 +18,7 @@ from iss_display.config import Settings
 from iss_display.display.lcd_driver import LcdDisplay
 from iss_display.data.iss_client import ISSClient, ISSFetchError, ISSFix
 from iss_display.data.astros_client import AstrosClient
+from iss_display.systemd import sd_notify
 
 try:
     import RPi.GPIO as GPIO
@@ -77,26 +77,6 @@ def configure_logging(level: str) -> None:
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
-
-def _sd_notify(message: str) -> None:
-    """Send a notification to systemd (if running under systemd).
-
-    Uses raw socket to $NOTIFY_SOCKET, avoiding python-systemd dependency.
-    """
-    addr = os.environ.get("NOTIFY_SOCKET")
-    if not addr:
-        return
-    try:
-        if addr[0] == "@":
-            addr = "\0" + addr[1:]
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            sock.sendto(message.encode(), addr)
-        finally:
-            sock.close()
-    except Exception:
-        pass
 
 
 class ISSOrbitInterpolator:
@@ -446,7 +426,7 @@ class WatchdogPinger(threading.Thread):
                 logger.exception("Watchdog status callback failed")
                 continue
             if main_age < self.STALE_THRESHOLD_SEC and render_age < self.STALE_THRESHOLD_SEC:
-                _sd_notify("WATCHDOG=1")
+                sd_notify("WATCHDOG=1")
             else:
                 logger.critical(
                     "Skipping watchdog ping: main_age=%.1fs render_age=%.1fs",
@@ -784,7 +764,7 @@ def run_loop(settings: Settings) -> None:
         watchdog = WatchdogPinger(_watchdog_status)
         watchdog.start()
 
-        _sd_notify("READY=1")
+        sd_notify("READY=1")
 
         while running:
             last_main_tick = time.monotonic()
@@ -841,7 +821,7 @@ def run_loop(settings: Settings) -> None:
     finally:
         gc.enable()
         logger.info("Cleaning up...")
-        _sd_notify("STOPPING=1")
+        sd_notify("STOPPING=1")
         try:
             watchdog.stop()
         except NameError:

@@ -24,6 +24,7 @@ except ImportError:
 from iss_display.config import Settings
 from iss_display.data.geography import get_common_area_name
 from iss_display.theme import THEME, rgb_to_hex, resolve_text_style, resolve_border_color
+from iss_display.systemd import sd_notify
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,13 @@ _MAX_RECOVERY_ATTEMPTS = 3
 # frames behind. Below the threshold, we advance one frame per render to
 # eliminate visible angular jumps under transient stalls.
 _FRAME_RESYNC_THRESHOLD = 4
+
+# During a cold globe build, each progress tick pushes systemd's start
+# timeout this far into the future. The service only sends READY=1 once the
+# frames exist, and a full 480-frame build on a thermally throttled Pi 3
+# takes ~30 minutes, well past TimeoutStartSec. Extending on progress keeps
+# a slow build alive while a hung one still times out.
+_BUILD_TIMEOUT_EXTEND_USEC = 5 * 60 * 1_000_000
 
 # Preview mode keeps a rolling set of this many PNGs instead of writing a
 # new file forever.
@@ -1222,6 +1230,10 @@ class LcdDisplay:
                 self.frame_cache.append(frame_array)
                 if (i + 1) % 10 == 0 or (i + 1) == self.num_frames:
                     logger.info(f"  {i+1}/{self.num_frames} frames done")
+                    sd_notify(
+                        f"EXTEND_TIMEOUT_USEC={_BUILD_TIMEOUT_EXTEND_USEC}\n"
+                        f"STATUS=Rendering globe frames {i+1}/{self.num_frames}"
+                    )
 
         self._update_globe_geometry()
 
