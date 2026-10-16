@@ -24,6 +24,7 @@ A Raspberry Pi display that tracks the International Space Station in real time.
 | **microSD card** | 8 GB or larger, with Raspberry Pi OS **Bookworm or newer** installed using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Older versions don't have the Python 3.11 this app needs. |
 | **Display** | [Waveshare 3.5" RPi LCD **(F)**](https://www.waveshare.com/3.5inch-rpi-lcd-f.htm), 320x480. Get the (F) specifically: other models, such as the (A), use a different display chip and won't work. |
 | **Power supply** | The **official Raspberry Pi supply** for your model (5.1 V). Generic phone chargers make the globe stutter; see [Power supply](#power-supply) for why. |
+| **Heatsink or fan** *(recommended)* | Rendering the globe on first start keeps all four cores busy. A bare Pi 3 reached 85 °C and slowed itself down partway through. |
 | **Toggle switch** *(optional)* | A latching (on/off) switch wired between GPIO 17 and GND to switch views |
 
 ---
@@ -96,7 +97,7 @@ Log out and back in for this to take effect.
 iss-display
 ```
 
-The first run renders 480 globe frames and saves them. This can take up to 10 minutes on a Pi 3 (less on a Pi 4), and the globe won't appear until it finishes. Later starts take a few seconds. Press `Ctrl+C` to stop.
+The first run renders 480 globe frames and saves them. This takes about 30 minutes on a Pi 3 (less on a Pi 4 or with cooling), and the globe won't appear until it finishes. To skip the wait, you can [build the frames on another computer](#globe-frame-cache). Later starts take a few seconds. Press `Ctrl+C` to stop.
 
 To try it without the display attached, generate preview images in `var/previews/` instead (it keeps the latest 100):
 
@@ -179,11 +180,11 @@ This code only supports the Waveshare 3.5" RPi LCD (F). Other models, such as th
 **Display is blank or freezes after a few seconds**
 The SPI buffer is probably still at the 4 KB default. Redo [step 3](#3-increase-the-spi-buffer-size) and reboot.
 
-**Nothing on screen for several minutes after the first start**
-That's normal: the globe frames are being rendered. See [step 7](#7-run-it).
+**Nothing on screen for a long time after the first start**
+That's normal for up to about 30 minutes on a Pi 3: the globe frames are being rendered. `systemctl --user status iss-display` shows progress, like `Rendering globe frames 170/480`. See [step 7](#7-run-it).
 
 **Globe rotation is slow or jittery**
-Almost always the power supply. Run `vcgencmd get_throttled`. Anything other than `throttled=0x0` means the Pi has been short on power and slowed itself down. Use the official 5.1 V supply with a short, thick cable. See [Power supply](#power-supply) for more.
+Almost always the power supply or heat. Run `vcgencmd get_throttled`. Anything other than `throttled=0x0` means the Pi has slowed itself down: bit 0 or 16 set (like `0x50005`) means it's short on power, so use the official 5.1 V supply with a short, thick cable. Bit 1 or 17 set (like `0x20002`) usually means it's running too hot, so add a heatsink or fan. See [Power supply](#power-supply) for more.
 
 **Permission denied on SPI or GPIO**
 Redo [step 6](#6-give-your-user-access-to-the-pins), then log out and back in.
@@ -230,7 +231,7 @@ color = [0, 255, 255]
 
 Styles cascade from the HUD base, to each bar, to individual elements, so you can set a style broadly and override it where needed. Delete any line to fall back to the built-in default.
 
-Changing any `[globe]` setting re-renders the globe on the next start, which takes up to 10 minutes on a Pi 3.
+Changing any `[globe]` setting re-renders the globe on the next start, which takes about 30 minutes on a Pi 3.
 
 ### Data sources
 
@@ -264,21 +265,18 @@ At the measured 66.7 MHz (verified artifact-free on this panel; see `bench/RESUL
 
 ### Globe frame cache
 
-The globe is 480 pre-rendered frames (`num_frames` in `theme.toml`) drawn with [Cartopy](https://scitools.org.uk/cartopy). Two caches live in `var/frame_cache/`:
+The globe is 480 pre-rendered frames (`num_frames` in `theme.toml`) drawn with [Cartopy](https://scitools.org.uk/cartopy). They're cached in one file, `var/frame_cache/globe_480f_<hash>_rgb565.npy`, already converted to the display's RGB565 format.
 
-- `globe_480f_<hash>.npz`: the rendered RGB frames (Cartopy output)
-- `globe_480f_<hash>_rgb565.npy`: the same frames converted to the display's RGB565 format
+The `<hash>` covers every `theme.toml` globe setting and the display size, so a theme change produces a new cache instead of reusing stale frames. Once a new cache is saved, every other cache file is deleted.
 
-The `<hash>` covers every `theme.toml` globe setting and the display size, so a theme change produces a new cache instead of reusing stale frames. Once the new cache is saved, caches from older settings are deleted.
-
-The first run generates the frames (about 2 to 4 minutes on a Pi 4, longer on a Pi 3), then converts them to RGB565 (about 4.5 minutes on a Pi 3) and caches both. Later runs load the RGB565 cache directly in a few seconds without opening the `.npz`. Deleting only the `.npz` and regenerating it also invalidates the RGB565 cache automatically (by comparing modification times).
+The first run renders the frames on all CPU cores, converting each one as it arrives, which takes about 30 minutes on a Pi 3. The service tells systemd it's still making progress every 10 frames, so the build isn't killed by the start timeout. Later runs load the cache in a few seconds.
 
 To skip the slow first run on the Pi, generate the cache on a faster machine and copy it over:
 
 ```bash
 # On your dev machine
 iss-display --preview-only
-scp var/frame_cache/globe_480f* pi@raspberrypi:~/iss-tracker/var/frame_cache/
+scp var/frame_cache/globe_480f_*_rgb565.npy pi@raspberrypi:~/iss-tracker/var/frame_cache/
 ```
 
 ### The systemd service
