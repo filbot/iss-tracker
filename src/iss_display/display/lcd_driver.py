@@ -1,13 +1,9 @@
-import hashlib
-import json
 import logging
 import math
-import os
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, List, Tuple, Union, TYPE_CHECKING
+from typing import Optional, Tuple, Union, TYPE_CHECKING
 
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -24,8 +20,8 @@ except ImportError:
 
 from iss_display.config import Settings
 from iss_display.data.geography import get_common_area_name
-from iss_display.theme import THEME, rgb_to_hex, resolve_text_style, resolve_border_color
-from iss_display.systemd import sd_notify
+from iss_display.display.globe_frames import load_frames
+from iss_display.theme import THEME, resolve_text_style, resolve_border_color
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +46,6 @@ _MAX_RECOVERY_ATTEMPTS = 3
 # frames behind. Below the threshold, we advance one frame per render to
 # eliminate visible angular jumps under transient stalls.
 _FRAME_RESYNC_THRESHOLD = 4
-
-# During a cold globe build, each progress tick pushes systemd's start
-# timeout this far into the future. The service only sends READY=1 once the
-# frames exist, and a full 480-frame build on a thermally throttled Pi 3
-# takes ~30 minutes, well past TimeoutStartSec. Extending on progress keeps
-# a slow build alive while a hung one still times out.
-_BUILD_TIMEOUT_EXTEND_USEC = 5 * 60 * 1_000_000
 
 # Preview mode keeps a rolling set of this many PNGs instead of writing a
 # new file forever.
@@ -118,44 +107,6 @@ def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
     """Convert an RGB color to a 16-bit RGB565 value (big-endian byte order)."""
     val = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
     return val
-
-
-def _globe_render_cfg() -> dict:
-    """theme.toml globe settings that affect the rendered frames, as a
-    plain picklable dict (passed to the multiprocessing render workers)."""
-    g = THEME.globe
-    return {
-        'background': g.background,
-        'ocean_color': g.ocean_color,
-        'land_color': g.land_color,
-        'land_border_color': g.land_border_color,
-        'land_border_width': g.land_border_width,
-        'coastline_color': g.coastline_color,
-        'coastline_width': g.coastline_width,
-        'grid_color': g.grid_color,
-        'grid_width': g.grid_width,
-        'grid_alpha': g.grid_alpha,
-        'grid_lat_spacing': g.grid_lat_spacing,
-        'grid_lon_spacing': g.grid_lon_spacing,
-    }
-
-
-def globe_cache_stem(width: int, height: int) -> str:
-    """File name stem for the globe frame caches, e.g. globe_480f_1a2b3c4d.
-
-    The hash covers everything that changes the rendered frames, so editing
-    the globe in theme.toml rebuilds the cache instead of silently reusing
-    stale frames.
-    """
-    g = THEME.globe
-    key = {
-        'globe': _globe_render_cfg(),
-        'scale': g.scale,
-        'num_frames': g.num_frames,
-        'size': [width, height],
-    }
-    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:8]
-    return f"globe_{g.num_frames}f_{digest}"
 
 
 def _rgb_array_to_rgb565(rgb: np.ndarray) -> np.ndarray:
@@ -429,6 +380,15 @@ class LcdDisplay:
         self.height = settings.display_height
         self._bytes_per_row = self.width * 2  # 2 bytes per pixel (RGB565)
 
+        # Pre-rendered globe frames, (num_frames, disc, disc) RGB565
+        # big-endian: the disc's bounding square only, since everything
+        # around it is flat background. Loaded before the hardware init so
+        # missing or stale frames fail before the panel lights up.
+        self.globe_frames: np.ndarray = load_frames(self.width, self.height)
+        self.num_frames = self.globe_frames.shape[0]
+        self._globe_bg565 = _rgb_to_rgb565(*THEME.globe.background)
+        logger.info("Loaded %d globe frames", self.num_frames)
+
         self.driver: Optional[ST7796S] = None
         if not settings.preview_only and HARDWARE_AVAILABLE:
             # Let init failures propagate: falling back to preview mode here
@@ -442,39 +402,26 @@ class LcdDisplay:
             else:
                 logger.info("Running in preview-only mode")
 
-        # Globe geometry (computed once during frame generation)
+        # Globe geometry
         self.globe_scale = THEME.globe.scale
         self.iss_orbit_scale = THEME.globe.iss_orbit_scale
         self.globe_center_x = self.width // 2
         self.globe_center_y = self.height // 2
         self.globe_radius_px = int(min(self.width, self.height) * self.globe_scale) // 2
 
-        # Globe disc bbox — sent on globe-only frames to avoid retransmitting
-        # the static HUD bars. Matches the rendering offset in _generate_frames.
-        globe_size = int(min(self.width, self.height) * self.globe_scale)
+        # Globe disc bbox, where the globe frames are pasted. Sent on
+        # globe-only frames to avoid retransmitting the static HUD bars.
+        globe_size = self.globe_frames.shape[1]
         gx0 = (self.width - globe_size) // 2
         gy0 = (self.height - globe_size) // 2
         self._globe_disc_bbox: Tuple[int, int, int, int] = (
             gx0, gy0, gx0 + globe_size - 1, gy0 + globe_size - 1,
         )
 
-        # Pre-rendered globe frames as RGB565 big-endian numpy arrays: views
-        # into one stacked array loaded from (or built into) the disk cache.
-        self.frame_np_cache: List[np.ndarray] = []
-        self.num_frames = THEME.globe.num_frames
-        self.frames_generated = False
-
         # Time-based rotation (decouples speed from frame count). Monotonic,
         # so an NTP step can't jump the globe or stall the frame-aligned wait.
         self._rotation_start_time: float = time.monotonic()
         self._rotation_period: float = THEME.globe.rotation_period_sec
-
-        # Cache directory
-        self.cache_dir = self.settings.preview_dir.parent / "frame_cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Load or generate globe frames
-        self._load_or_generate_frames()
 
         # Reusable frame buffer — avoids per-frame allocation
         self._frame_buf = bytearray(self.width * self.height * 2)
@@ -1070,198 +1017,6 @@ class LcdDisplay:
         """Convert PIL Image to RGB565 bytes for direct display."""
         return _rgb_array_to_rgb565(np.array(image)).astype('>u2').tobytes()
 
-    def _rgb565_cache_path(self) -> Path:
-        return self.cache_dir / f"{globe_cache_stem(self.width, self.height)}_rgb565.npy"
-
-    def _remove_stale_caches(self) -> None:
-        """Delete globe caches from other theme settings and older cache
-        formats (hundreds of MB each, which adds up on an SD card)."""
-        current = self._rgb565_cache_path().name
-        for path in self.cache_dir.glob("globe_*"):
-            if path.name != current:
-                try:
-                    path.unlink()
-                    logger.info("Removed stale globe cache: %s", path.name)
-                except OSError as e:
-                    logger.warning("Could not remove stale cache %s: %s", path.name, e)
-
-    def _load_rgb565_cache(self) -> bool:
-        """Load the RGB565 globe frames from disk. Returns True on success."""
-        path = self._rgb565_cache_path()
-        if not path.exists():
-            return False
-        try:
-            stacked = np.load(path)
-            expected = (self.num_frames, self.height, self.width)
-            if stacked.dtype != np.dtype('>u2') or stacked.shape != expected:
-                logger.warning(
-                    "RGB565 cache mismatch (dtype=%s shape=%s, expected %s), recomputing",
-                    stacked.dtype, stacked.shape, expected,
-                )
-                return False
-            # Per-frame views into the single stacked array (no copies)
-            self.frame_np_cache = [stacked[i] for i in range(self.num_frames)]
-            logger.info("Loaded %d RGB565 frames from cache", self.num_frames)
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to load RGB565 cache: {e}, recomputing")
-            return False
-
-    # ─── Frame cache ──────────────────────────────────────────────────────
-
-    def _load_or_generate_frames(self):
-        """Load the globe frames from the RGB565 cache, or render them."""
-        if not self._load_rgb565_cache():
-            self._generate_frames()
-        self._update_globe_geometry()
-        self.frames_generated = True
-
-    def _generate_frames(self):
-        """Render all Earth rotation frames with Cartopy and cache them.
-
-        Uses multiprocessing to spread work across CPU cores and 110m
-        resolution features for faster geometry processing. Each frame is
-        converted to RGB565 as soon as a worker returns it, so the RGB
-        frames are never all held at once (that peaked at ~221 MB at 480
-        frames on a 1 GB Pi 3, past the service's MemoryHigh).
-        """
-        import importlib.util
-        import multiprocessing as mp
-
-        # Verify cartopy is available before spawning workers, without
-        # importing it into this process (only the workers need it)
-        if importlib.util.find_spec("cartopy") is None:
-            raise ImportError(
-                "Cartopy and matplotlib are required for frame generation. "
-                "Render the cache on a development machine with "
-                "`iss-display --preview-only`, then copy var/frame_cache/ "
-                "to the target device."
-            )
-
-        globe_cfg = _globe_render_cfg()
-
-        degrees_per_frame = 360 / self.num_frames
-        work_args = [
-            ((i * degrees_per_frame) - 180, self.width, self.height,
-             self.globe_scale, globe_cfg)
-            for i in range(self.num_frames)
-        ]
-
-        n_workers = min(mp.cpu_count(), self.num_frames)
-        logger.info(f"Generating {self.num_frames} Earth frames "
-                     f"({n_workers} workers, 110m resolution)...")
-
-        # Single stacked big-endian array: per-frame views share this one
-        # backing buffer, and assignment into it converts from native order
-        # exactly once. (np.stack must NOT be used here — it silently
-        # produces native byte order, which would byte-swap on every frame
-        # copy in the render hot path.)
-        stacked = np.empty((self.num_frames, self.height, self.width), dtype='>u2')
-        with mp.Pool(n_workers) as pool:
-            for i, frame_array in enumerate(
-                pool.imap(self._render_globe_frame_worker, work_args)
-            ):
-                stacked[i] = _rgb_array_to_rgb565(frame_array)
-                if (i + 1) % 10 == 0 or (i + 1) == self.num_frames:
-                    logger.info(f"  {i+1}/{self.num_frames} frames done")
-                    sd_notify(
-                        f"EXTEND_TIMEOUT_USEC={_BUILD_TIMEOUT_EXTEND_USEC}\n"
-                        f"STATUS=Rendering globe frames {i+1}/{self.num_frames}"
-                    )
-        self.frame_np_cache = [stacked[i] for i in range(self.num_frames)]
-
-        # Write to a temp name and rename, so a kill mid-write (e.g. a
-        # systemd timeout) can't leave a truncated cache behind.
-        path = self._rgb565_cache_path()
-        tmp = path.with_name(path.name + ".tmp")
-        sd_notify(f"EXTEND_TIMEOUT_USEC={_BUILD_TIMEOUT_EXTEND_USEC}\n"
-                  "STATUS=Saving globe frame cache")
-        try:
-            with open(tmp, "wb") as f:
-                np.save(f, stacked)
-            os.replace(tmp, path)
-            logger.info("RGB565 cache saved: %s", path.name)
-            self._remove_stale_caches()
-        except Exception as e:
-            logger.warning(f"Failed to save RGB565 cache: {e}")
-
-        logger.info("Frame generation complete!")
-
-    def _update_globe_geometry(self):
-        """Compute globe center and radius.
-
-        Depends only on configured dimensions and globe_scale — matches the
-        size the frames were rendered at, whichever cache they came from.
-        """
-        globe_size = int(min(self.width, self.height) * self.globe_scale)
-        self.globe_center_x = self.width // 2
-        self.globe_center_y = self.height // 2
-        self.globe_radius_px = globe_size // 2
-
-    @staticmethod
-    def _render_globe_frame_worker(args: tuple) -> np.ndarray:
-        """Render a single globe frame. Multiprocessing-friendly (static).
-
-        Returns the composited frame as a numpy uint8 RGB array.
-        """
-        central_lon, width, height, globe_scale, globe_cfg = args
-
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import cartopy.crs as ccrs
-        import cartopy.feature as cfeature
-
-        bg_hex = rgb_to_hex(globe_cfg['background'])
-        globe_size = int(min(width, height) * globe_scale)
-        dpi = 100
-        fig = plt.figure(figsize=(globe_size / dpi, globe_size / dpi), dpi=dpi, facecolor=bg_hex)
-
-        projection = ccrs.Orthographic(central_longitude=central_lon, central_latitude=0)
-        ax = fig.add_subplot(1, 1, 1, projection=projection)
-        ax.set_facecolor(bg_hex)
-        ax.set_global()
-
-        # Use 110m (lowest) resolution for faster geometry processing
-        ax.add_feature(cfeature.NaturalEarthFeature(
-            'physical', 'ocean', '110m',
-            facecolor=rgb_to_hex(globe_cfg['ocean_color']), edgecolor='none'), zorder=0)
-        ax.add_feature(cfeature.NaturalEarthFeature(
-            'physical', 'land', '110m',
-            facecolor=rgb_to_hex(globe_cfg['land_color']),
-            edgecolor=rgb_to_hex(globe_cfg['land_border_color']),
-            linewidth=globe_cfg['land_border_width']), zorder=1)
-        ax.add_feature(cfeature.NaturalEarthFeature(
-            'physical', 'coastline', '110m',
-            facecolor='none',
-            edgecolor=rgb_to_hex(globe_cfg['coastline_color']),
-            linewidth=globe_cfg['coastline_width']), zorder=2)
-        ax.gridlines(color=rgb_to_hex(globe_cfg['grid_color']),
-                      linewidth=globe_cfg['grid_width'],
-                      alpha=globe_cfg['grid_alpha'], linestyle='-',
-                      xlocs=np.arange(-180, 180, globe_cfg['grid_lon_spacing']),
-                      ylocs=np.arange(-90, 91, globe_cfg['grid_lat_spacing']))
-        ax.spines['geo'].set_visible(False)
-
-        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-        # Render to raw RGBA buffer instead of PNG encode/decode round-trip
-        fig.canvas.draw()
-        rgba = np.asarray(fig.canvas.buffer_rgba())
-        plt.close(fig)
-
-        globe_img = rgba[:, :, :3]  # drop alpha channel
-
-        # Composite onto full-size canvas
-        final = np.zeros((height, width, 3), dtype=np.uint8)
-        final[:, :] = globe_cfg['background']
-        x_off = (width - globe_img.shape[1]) // 2
-        y_off = (height - globe_img.shape[0]) // 2
-        final[y_off:y_off + globe_img.shape[0],
-              x_off:x_off + globe_img.shape[1]] = globe_img
-
-        return final
-
     # ─── ISS marker (RGB565 byte-buffer operations) ──────────────────────
 
     def _calc_iss_screen_pos(self, lat: float, lon: float, central_lon: float):
@@ -1428,10 +1183,6 @@ class LcdDisplay:
         The frame index advances on every call, so the globe always changes
         and there is no marker-only update path.
         """
-        if not self.frames_generated:
-            logger.warning("Frames not yet generated")
-            return
-
         self._resync_after_reinit_if_needed()
 
         # Hybrid frame indexing: advance by one frame per render, but resync
@@ -1509,8 +1260,9 @@ class LcdDisplay:
             self._last_sent_bottom_version = bottom_version
 
     def _do_full_update(self, frame_idx: int, iss_pos):
-        """Full-frame update: copy globe, draw marker, patch HUD, send everything."""
-        np.copyto(self._frame_buf_np, self.frame_np_cache[frame_idx])
+        """Full-frame update: background, globe, marker, HUD, send everything."""
+        self._frame_buf_np[:] = self._globe_bg565
+        self._paste_globe(frame_idx)
 
         new_bbox = None
         if iss_pos is not None:
@@ -1524,10 +1276,15 @@ class LcdDisplay:
 
         self._prev_marker_bbox = new_bbox
 
+    def _paste_globe(self, frame_idx: int) -> None:
+        """Copy one globe frame into the disc bbox of _frame_buf_np."""
+        x0, y0, x1, y1 = self._globe_disc_bbox
+        self._frame_buf_np[y0:y1 + 1, x0:x1 + 1] = self.globe_frames[frame_idx]
+
     def _do_globe_region_update(self, frame_idx: int, iss_pos):
         """Globe changed but HUD didn't: send only the disc bbox + marker.
 
-        Refreshes the globe disc into _frame_buf_np from the new cached frame,
+        Refreshes the globe disc into _frame_buf_np from the new frame,
         draws the marker, then sends a single SPI transfer covering the union
         of the disc bbox, the old marker bbox, and the new marker bbox. The
         HUD bytes are not retransmitted, dropping typical SPI cost from
@@ -1535,17 +1292,15 @@ class LcdDisplay:
         """
         old_bbox = self._prev_marker_bbox
 
-        # Restore old marker region from the cache. This is required when the
+        # Erase the old marker to background. This is required when the
         # marker sat outside the disc bbox (it can extend past the disc by up
-        # to (iss_orbit_scale - 1) * radius pixels). When inside the disc,
-        # this is harmless extra work — the disc copy below overwrites it.
+        # to (iss_orbit_scale - 1) * radius pixels). Inside the disc, the
+        # globe paste below overwrites it.
         if old_bbox is not None:
             x0, y0, x1, y1 = old_bbox
-            self._frame_buf_np[y0:y1 + 1, x0:x1 + 1] = self.frame_np_cache[frame_idx][y0:y1 + 1, x0:x1 + 1]
+            self._frame_buf_np[y0:y1 + 1, x0:x1 + 1] = self._globe_bg565
 
-        # Refresh the disc region from the new globe frame.
-        dx0, dy0, dx1, dy1 = self._globe_disc_bbox
-        self._frame_buf_np[dy0:dy1 + 1, dx0:dx1 + 1] = self.frame_np_cache[frame_idx][dy0:dy1 + 1, dx0:dx1 + 1]
+        self._paste_globe(frame_idx)
 
         # Draw new marker.
         new_bbox = None

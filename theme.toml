@@ -14,6 +14,7 @@ scale               = 0.70
 iss_orbit_scale     = 1.20
 num_frames          = 480
 rotation_period_sec = 14.0
+map_resolution      = "50m"            # Natural Earth detail: "110m", "50m" or "10m"
 
 background          = [0, 0, 0]
 ocean_color         = [62, 160, 206]    # Boeing PFD sky blue (#3EA0CE)

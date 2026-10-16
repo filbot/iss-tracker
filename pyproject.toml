@@ -8,14 +8,19 @@ dependencies = [
     "Pillow>=10.0.0",
     "requests>=2.32.0",
     "python-dotenv>=1.0.0",
-    "cartopy>=0.22.0",
-    "matplotlib>=3.8.0",
     "numpy>=1.26.0",
     "spidev>=3.6",
     "rpi-lgpio>=0.6"
 ]
 
 dynamic = ["readme"]
+
+[project.optional-dependencies]
+# Only for tools/render_globe.py on a development machine
+render = [
+    "cartopy>=0.22.0",
+    "matplotlib>=3.8.0",
+]
 
 [project.scripts]
 iss-display = "iss_display.app.main:main"
@@ -29,6 +34,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+iss_display = ["assets/*.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -54,6 +54,7 @@ class GlobeStyle:
     iss_orbit_scale: float = 1.10          # ISS altitude exaggeration (1.0 = on surface)
     num_frames: int = 240                  # Rotation frames (higher = smoother, more RAM/startup)
     rotation_period_sec: float = 14.0      # Seconds for one full rotation (~17 FPS at 240 frames)
+    map_resolution: str = "110m"           # Natural Earth detail: "110m", "50m" or "10m"
 
     # Colors (all RGB)
     background: RGB = (0, 0, 0)

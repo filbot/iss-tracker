@@ -15,10 +15,10 @@ EnvironmentFile=%h/iss-tracker/.env
 # Watchdog: systemd kills and restarts service if no ping within this window
 WatchdogSec=60s
 
-# Cold start (globe generation + RGB565 conversion) can take several minutes
-# on a Pi 3; READY=1 is only sent once the main loop is up. Warm starts with
-# the RGB565 disk cache are seconds.
-TimeoutStartSec=15min
+# READY=1 is sent once the main loop is up. Loading the committed globe
+# frames takes about a second; the slow part is the first ISS and crew
+# fetches, which can take ~30s against a dead network before giving up.
+TimeoutStartSec=90s
 
 # Restart policy: 5s -> 10s -> 20s -> 40s -> 60s (5 steps)
 Restart=always

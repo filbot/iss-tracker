@@ -9,7 +9,7 @@ proposed optimizations can be evaluated with numbers instead of guesses:
         time — does not touch the display contents.
 
   spi   Effective SPI throughput and end-to-end achievable FPS at a range of
-        requested clock speeds, streaming the REAL cached globe frames through
+        requested clock speeds, streaming the REAL committed globe frames through
         the REAL ST7796S init sequence. This doubles as a visual integrity
         check: watch the panel — if the globe is corrupted at a given speed,
         that speed fails on this wiring. Requires exclusive display access:
@@ -38,13 +38,12 @@ import numpy as np
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-from iss_display.display.lcd_driver import globe_cache_stem  # noqa: E402
+from iss_display.display.globe_frames import GlobeFramesError, load_frames  # noqa: E402
+from iss_display.display.lcd_driver import _rgb_to_rgb565  # noqa: E402
 from iss_display.theme import THEME  # noqa: E402
 
 WIDTH, HEIGHT = 320, 480
 FRAME_BYTES = WIDTH * HEIGHT * 2
-# Same cache the app writes, keyed on the current theme.toml globe settings
-CACHE = REPO / "var/frame_cache" / f"{globe_cache_stem(WIDTH, HEIGHT)}_rgb565.npy"
 NUM_FRAMES = THEME.globe.num_frames
 
 # Globe disc geometry, from theme.toml globe.scale like the app
@@ -70,6 +69,22 @@ def vcgencmd(*args: str) -> str:
         return "n/a"
 
 
+def load_full_frames() -> np.ndarray:
+    """The app's globe frames composited onto full-screen background, or
+    synthetic noise frames if they're missing or stale."""
+    try:
+        disc = load_frames(WIDTH, HEIGHT)
+    except GlobeFramesError as e:
+        print(f"  {e}\n  using synthetic frames")
+        return np.random.randint(0, 65535, (NUM_FRAMES, HEIGHT, WIDTH),
+                                 dtype=np.uint16).astype(">u2")
+    full = np.empty((disc.shape[0], HEIGHT, WIDTH), dtype=">u2")
+    full[:] = _rgb_to_rgb565(*THEME.globe.background)
+    full[:, GY0:GY0 + GLOBE_SIZE, GX0:GX0 + GLOBE_SIZE] = disc
+    print(f"  loaded real globe frames: {full.shape}")
+    return full
+
+
 def env_snapshot() -> None:
     print(f"  core clock : {vcgencmd('measure_clock', 'core')}")
     print(f"  arm clock  : {vcgencmd('measure_clock', 'arm')}")
@@ -93,12 +108,7 @@ def bench_cpu() -> None:
     print("=== CPU render-path benchmarks ===")
     env_snapshot()
 
-    if CACHE.exists():
-        frames = np.load(CACHE, mmap_mode=None)
-        print(f"  loaded real frame cache: {frames.shape} {frames.dtype}")
-    else:
-        print("  frame cache missing — using synthetic frames")
-        frames = np.random.randint(0, 65535, (NUM_FRAMES, HEIGHT, WIDTH), dtype=np.uint16).astype(">u2")
+    frames = load_full_frames()
 
     frame_buf = bytearray(FRAME_BYTES)
     fb = np.frombuffer(frame_buf, dtype=">u2").reshape(HEIGHT, WIDTH)
@@ -244,13 +254,7 @@ def bench_spi(speeds_mhz: list[float], n_frames: int, hold_sec: float) -> None:
     print("=== SPI throughput / end-to-end FPS benchmarks ===")
     env_snapshot()
 
-    if CACHE.exists():
-        frames = np.load(CACHE)
-        print(f"  streaming real globe frames: {frames.shape}")
-    else:
-        print("  frame cache missing — synthetic noise frames")
-        frames = np.random.randint(0, 65535, (NUM_FRAMES, HEIGHT, WIDTH),
-                                   dtype=np.uint16).astype(">u2")
+    frames = load_full_frames()
     nf = frames.shape[0]
     full_bufs = [np.ascontiguousarray(frames[i]).tobytes() for i in range(0, nf, nf // 24)]
 
@@ -286,7 +290,7 @@ def bench_spi(speeds_mhz: list[float], n_frames: int, hold_sec: float) -> None:
         summarize(f"spi{mhz}_set_window", t)
 
         # 3. End-to-end globe-region frame loop: replicate the app's
-        #    per-frame work (disc copy from cache -> extract -> window -> SPI)
+        #    per-frame work (disc copy from frames -> extract -> window -> SPI)
         t = []
         for i in range(n_frames):
             t0 = time.perf_counter()
