@@ -91,7 +91,7 @@ The defaults work out of the box. Edit `.env` only if you need to change GPIO pi
 iss-display
 ```
 
-On the first run, the app generates 144 globe frames. This takes a few minutes on a Pi 3B — subsequent starts load from cache in a few seconds.
+On the first run, the app renders 480 globe frames and caches them. This can take up to 10 minutes on a Pi 3 (less on a Pi 4), and the globe won't appear until it finishes. Later starts load from the cache in a few seconds.
 
 To test without hardware (generates preview PNGs instead):
 
@@ -274,7 +274,7 @@ To speed things up, you can generate the cache on a faster machine and copy it o
 ```bash
 # On your dev machine
 iss-display --preview-only
-scp var/frame_cache/globe_144f.npz pi@raspberrypi:~/iss-tracker/var/frame_cache/
+scp var/frame_cache/globe_480f* pi@raspberrypi:~/iss-tracker/var/frame_cache/
 ```
 
 ---
