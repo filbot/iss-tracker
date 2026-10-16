@@ -17,7 +17,7 @@ A Raspberry Pi-powered display that tracks the International Space Station in re
 
 | Component | Details |
 |-----------|---------|
-| **Raspberry Pi** | Model 3B or newer, running Raspberry Pi OS |
+| **Raspberry Pi** | Model 3B or newer, running Raspberry Pi OS Bookworm or newer (the app needs Python 3.11+) |
 | **LCD display** | Waveshare 3.5" RPi LCD (F) — 320x480, SPI, plugs directly onto the GPIO header |
 | **Power supply** | **5.1 V** / 2.5 A+ — the official Raspberry Pi supply is strongly recommended (see below) |
 | **Toggle switch** *(optional)* | Latching switch wired between GPIO 17 and GND to switch display views |
@@ -69,6 +69,8 @@ sudo reboot
 
 ### 4. Clone and install
 
+Run these from your home folder. The boot service in [Run on Boot](#run-on-boot-systemd) expects the project at `~/iss-tracker`.
+
 ```bash
 git clone https://github.com/filbot/iss-tracker.git
 cd iss-tracker
@@ -76,6 +78,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
+
+The `source .venv/bin/activate` line only lasts for the current terminal session. If you open a new terminal later, run `cd ~/iss-tracker && source .venv/bin/activate` again before using `iss-display`.
 
 ### 5. Configure
 
@@ -85,7 +89,17 @@ cp .env.example .env
 
 The defaults work out of the box. Edit `.env` only if you need to change GPIO pins or add an optional N2YO API key.
 
-### 6. Run
+### 6. GPIO permissions
+
+Give your user access to the display and switch pins:
+
+```bash
+sudo usermod -a -G gpio,spi $USER
+```
+
+Then log out and back in.
+
+### 7. Run
 
 ```bash
 iss-display
@@ -98,16 +112,6 @@ To test without hardware (generates preview PNGs instead):
 ```bash
 iss-display --preview-only
 ```
-
-### 7. GPIO permissions
-
-If you get permission errors, add your user to the required groups:
-
-```bash
-sudo usermod -a -G gpio,spi $USER
-```
-
-Then log out and back in.
 
 ---
 
@@ -170,7 +174,7 @@ systemctl --user start iss-display.service
 
 - **Watchdog** — restarts the process if it stops responding (60s timeout)
 - **Auto-restart** — recovers from crashes automatically
-- **Memory cap** — limits usage to 450 MB
+- **Memory cap** — limits usage to 450 MB (only enforced if `cgroup_enable=memory` is in `/boot/firmware/cmdline.txt`)
 - **Graceful shutdown** — turns off the backlight and releases GPIO on stop
 
 ### Common commands
@@ -312,6 +316,15 @@ iss-tracker/
 ---
 
 ## Troubleshooting
+
+**`pip install -e .` says the folder "does not appear to be a Python project"**
+You're not inside the project folder. Run `cd ~/iss-tracker` first; `ls` there should list `pyproject.toml`.
+
+**`iss-display: command not found`**
+The virtual environment isn't active in this terminal. Run `cd ~/iss-tracker && source .venv/bin/activate`, then try again.
+
+**Display doesn't work with a different Waveshare model**
+This code only supports the Waveshare 3.5" RPi LCD (F). Other models, such as the (A), use a different display controller (this code drives the ST7796S on the (F)).
 
 **Display is blank or freezes after a few seconds**
 The SPI buffer size is probably still at the 4 KB default. Follow step 3 in Quick Start to increase it to 307,200 bytes, then reboot.
