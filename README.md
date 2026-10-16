@@ -209,9 +209,13 @@ Check the log: `journalctl --user -u iss-display -f`. If the display can't be in
 | `GPIO_RST` | `27` | LCD reset pin |
 | `GPIO_BL` | `18` | LCD backlight pin |
 | `GPIO_TOGGLE` | `17` | View toggle switch pin |
+| `SPI_BUS` | `0` | SPI bus the display is on |
+| `SPI_DEVICE` | `0` | SPI chip select the display is on |
 | `SPI_SPEED_HZ` | `48000000` | SPI clock speed. 66.7 MHz is verified on the author's unit with a pinned 400 MHz core clock, but it varies by panel; validate with `bench/display_bench.py` before raising it. See [SPI bandwidth](#spi-bandwidth). |
 | `PREVIEW_ONLY` | `false` | Set to `true` to generate PNGs instead of driving the LCD |
+| `ISS_PREVIEW_DIR` | `var/previews` | Where preview PNGs go. The globe cache lives next to it, in `frame_cache/`. |
 | `ISS_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `ISS_PERF_LOG` | *(off)* | Set to `1` to record frame render times. Send the process `SIGUSR1` (`kill -USR1 <pid>`) to log p50/p95/p99/max. |
 
 ### Look and feel (`theme.toml`)
 
@@ -283,6 +287,8 @@ scp var/frame_cache/globe_480f_*_rgb565.npy pi@raspberrypi:~/iss-tracker/var/fra
 
 `deploy/iss-display.service` runs the app as a systemd user service. A watchdog restarts the process if it stops responding for 60 seconds, and crashes are retried with a backoff from 5 to 60 seconds. On stop, the app turns off the backlight and releases GPIO.
 
+The app exits on purpose, so systemd can retry, when the display can't be initialized at startup or when SPI writes fail 20 times in a row. During a first-run globe build it keeps extending systemd's start timeout while frames are still being rendered.
+
 Memory is capped at 450 MB, but systemd only enforces the cap if `cgroup_enable=memory` is in `/boot/firmware/cmdline.txt`.
 
 ### System resilience
@@ -323,13 +329,24 @@ iss-tracker/
 │   ├── data/astros_client.py           # People in Space API client
 │   ├── data/geography.py               # Region name lookup
 │   ├── config.py                       # Settings from environment variables
+│   ├── systemd.py                      # sd_notify (ready, watchdog, status)
 │   └── theme.py                        # Theme TOML loader, cascade resolution
+├── tests/                              # pytest unit tests
 ├── var/
 │   ├── frame_cache/                    # Cached globe frames (auto-generated)
 │   └── previews/                       # Preview PNGs (--preview-only mode)
 ├── start.sh                            # Manual start script
 └── stop.sh                             # Manual stop script
 ```
+
+### Running the tests
+
+```bash
+pip install pytest
+pytest
+```
+
+The tests cover the position interpolator, the ISS API client, and the region lookup. They don't need the display attached.
 
 ---
 
