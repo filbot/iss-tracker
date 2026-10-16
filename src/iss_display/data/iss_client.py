@@ -50,7 +50,6 @@ class ISSClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._session = requests.Session()
-        self._last_fix: Optional[ISSFix] = None
 
     def reset_session(self) -> None:
         """Close and recreate the HTTP session (clears stale connection pool)."""
@@ -80,9 +79,7 @@ class ISSClient:
             try:
                 response = self._session.get(api_url, timeout=_TIMEOUT)
                 response.raise_for_status()
-                fix = self._parse_response(response.json())
-                self._last_fix = fix
-                return fix
+                return self._parse_response(response.json())
             except Exception as e:
                 logger.debug(f"API {api_url} failed: {e}")
                 errors.append(f"{api_url}: {e}")

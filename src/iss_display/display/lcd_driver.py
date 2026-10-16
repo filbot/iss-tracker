@@ -661,7 +661,7 @@ class LcdDisplay:
             x += w
         return x
 
-    def render_hud_bytes(self, telemetry: "ISSFix") -> Tuple[bytes, bytes, str]:
+    def render_hud_bytes(self, telemetry: Optional["ISSFix"]) -> Tuple[bytes, bytes, str]:
         """Compose the HUD bars from glyph atlases and return RGB565 bytes.
 
         Pure numpy tile pastes — no PIL in this path. The old PIL version
@@ -674,22 +674,29 @@ class LcdDisplay:
         it composes into shared per-bar buffers. The returned bytes are
         copies and safe to hand across threads.
 
+        telemetry is None before the first successful fetch: every value
+        shows "--" and OVER shows NO LINK.
+
         Returns (top_bytes, bottom_bytes, cache_key).
         """
-        lat = telemetry.latitude
-        lon = telemetry.longitude
-        alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
-        vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
+        if telemetry is None:
+            lat = lon = 0.0
+            lat_val = lon_val = alt_val = vel_val = age_val = "--"
+            stale = True
+        else:
+            lat = telemetry.latitude
+            lon = telemetry.longitude
+            alt_km = telemetry.altitude_km if telemetry.altitude_km else 420.0
+            vel_kmh = telemetry.velocity_kmh if telemetry.velocity_kmh else 27600.0
 
-        lat_dir = "N" if lat >= 0 else "S"
-        lon_dir = "E" if lon >= 0 else "W"
-        lat_val = f"{abs(lat):05.2f}\u00b0{lat_dir}"
-        lon_val = f"{abs(lon):06.2f}\u00b0{lon_dir}"
-        alt_val = f"{alt_km:,.0f}"
-        vel_val = f"{vel_kmh:,.0f}"
-        age_sec = int(telemetry.data_age_sec)
-        age_val = _format_age(age_sec)
-        stale = telemetry.data_age_sec >= _STALE_DATA_SEC
+            lat_dir = "N" if lat >= 0 else "S"
+            lon_dir = "E" if lon >= 0 else "W"
+            lat_val = f"{abs(lat):05.2f}\u00b0{lat_dir}"
+            lon_val = f"{abs(lon):06.2f}\u00b0{lon_dir}"
+            alt_val = f"{alt_km:,.0f}"
+            vel_val = f"{vel_kmh:,.0f}"
+            age_val = _format_age(int(telemetry.data_age_sec))
+            stale = telemetry.data_age_sec >= _STALE_DATA_SEC
 
         cache_key = f"{lat_val}|{lon_val}|{alt_val}|{vel_val}|{age_val}|{int(stale)}"
 
@@ -1401,8 +1408,9 @@ class LcdDisplay:
 
     # ─── Main update loop entry point ─────────────────────────────────────
 
-    def update_with_telemetry(self, telemetry: "ISSFix"):
-        """Update the display with current ISS telemetry.
+    def update_with_telemetry(self, telemetry: Optional["ISSFix"]):
+        """Update the display with current ISS telemetry (None = no fix yet,
+        drawn as the bare globe with no marker).
 
         Render-thread fast path. PIL HUD rendering happens off-thread in the
         HudComposer; this method only consumes the latest pre-rendered bytes
@@ -1447,7 +1455,8 @@ class LcdDisplay:
         central_lon = (current_frame * (360.0 / self.num_frames)) - 180.0
 
         globe_changed = current_frame != self._prev_frame_idx
-        iss_pos = self._calc_iss_screen_pos(telemetry.latitude, telemetry.longitude, central_lon)
+        iss_pos = (None if telemetry is None else
+                   self._calc_iss_screen_pos(telemetry.latitude, telemetry.longitude, central_lon))
 
         if self._force_full_frame:
             # Forced resync: send everything in one transfer using whatever

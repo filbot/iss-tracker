@@ -53,3 +53,16 @@ def test_data_age_ignores_wall_clock_steps(clock):
     clock.mono += 10
 
     assert interp.get_telemetry().data_age_sec == pytest.approx(10.0)
+
+
+def test_no_fix_returns_none_until_first_fetch(clock):
+    client = FakeClient()
+    interp = ISSOrbitInterpolator(client)
+    client.queue.append(ISSFetchError("network down"))
+    interp._do_fetch()
+
+    assert interp.get_telemetry() is None
+
+    client.queue.append(fix(10.0, 20.0))
+    interp._do_fetch()
+    assert interp.get_telemetry().latitude == pytest.approx(10.0)

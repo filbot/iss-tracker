@@ -225,20 +225,15 @@ class ISSOrbitInterpolator:
         self.start(quiet=not loud, initial_fetch=False)
         return True
 
-    def get_telemetry(self) -> ISSFix:
-        """Get current interpolated telemetry (thread-safe, non-blocking)."""
+    def get_telemetry(self) -> Optional[ISSFix]:
+        """Get current interpolated telemetry (thread-safe, non-blocking).
+
+        Returns None until the first successful fetch, so the display shows
+        NO LINK instead of presenting a made-up position as live data.
+        """
         with self._lock:
             if self._last_fix is None:
-                # Fall back to the client's cached position from a previous
-                # session if the very first fetch failed.
-                cached = self.client._last_fix
-                if cached is not None:
-                    return cached
-                return ISSFix(
-                    latitude=0.0, longitude=0.0,
-                    altitude_km=420.0, velocity_kmh=27600.0,
-                    timestamp=time.time()
-                )
+                return None
 
             dt = time.monotonic() - self._last_fetch_time
 
@@ -312,8 +307,8 @@ class ISSOrbitInterpolator:
             # produces thousands of identical multi-line warnings.
             if self._consecutive_failures <= 3 or self._consecutive_failures % 20 == 0:
                 detail = ("using last known position"
-                          if self.client._last_fix is not None
-                          else "no cached position available")
+                          if self._last_fix is not None
+                          else "no position yet")
                 logger.warning(
                     "All APIs failed (%dx), %s. Errors: %s",
                     self._consecutive_failures, detail, e,
@@ -465,11 +460,11 @@ class HudComposer(threading.Thread):
         self._lcd = lcd_display
         self._running = True
         self._lock = threading.Lock()
-        self._telemetry: Optional[ISSFix] = None
+        self._telemetry: Optional[ISSFix] = None  # None = no fix yet
         self._wakeup = threading.Event()
         self._interval = lcd_display._hud_min_render_interval
 
-    def set_telemetry(self, telemetry: ISSFix) -> None:
+    def set_telemetry(self, telemetry: Optional[ISSFix]) -> None:
         """Update the telemetry snapshot consumed by the next composer pass."""
         with self._lock:
             self._telemetry = telemetry
@@ -487,8 +482,6 @@ class HudComposer(threading.Thread):
                 return
             with self._lock:
                 telemetry = self._telemetry
-            if telemetry is None:
-                continue
             try:
                 top_b, bot_b, key = self._lcd.render_hud_bytes(telemetry)
                 self._lcd.apply_hud_bytes(top_b, bot_b, key)
@@ -524,8 +517,8 @@ class DisplayRenderer(threading.Thread):
             deque(maxlen=256) if self._perf_enabled else None
         )
 
-    def set_telemetry(self, telemetry: ISSFix):
-        """Update the telemetry snapshot read by the render loop."""
+    def set_telemetry(self, telemetry: Optional[ISSFix]):
+        """Update the telemetry snapshot read by the render loop (None = no fix yet)."""
         with self._lock:
             self._telemetry = telemetry
 
@@ -628,19 +621,20 @@ class DisplayRenderer(threading.Thread):
         with self._lock:
             telemetry = self._telemetry
 
-        if telemetry is not None:
-            try:
-                if self._frame_durations_ms is not None:
-                    t_start = time.perf_counter()
-                    lcd.update_with_telemetry(telemetry)
-                    self._frame_durations_ms.append((time.perf_counter() - t_start) * 1000.0)
-                else:
-                    lcd.update_with_telemetry(telemetry)
-                self._consecutive_errors = 0
-            except Exception as e:
-                self._consecutive_errors += 1
-                logger.error(f"Render error ({self._consecutive_errors}x): {e}")
-                self._handle_render_error(lcd)
+        # Render even with no fix yet: the globe keeps turning, with no
+        # marker and a NO LINK HUD.
+        try:
+            if self._frame_durations_ms is not None:
+                t_start = time.perf_counter()
+                lcd.update_with_telemetry(telemetry)
+                self._frame_durations_ms.append((time.perf_counter() - t_start) * 1000.0)
+            else:
+                lcd.update_with_telemetry(telemetry)
+            self._consecutive_errors = 0
+        except Exception as e:
+            self._consecutive_errors += 1
+            logger.error(f"Render error ({self._consecutive_errors}x): {e}")
+            self._handle_render_error(lcd)
 
     def _run_crew_frame(self, lcd):
         """Render the crew view (static, re-render only on data change)."""
@@ -737,7 +731,10 @@ def run_loop(settings: Settings) -> None:
 
     try:
         telemetry = interpolator.get_telemetry()
-        logger.info(f"Initial ISS Position: Lat {telemetry.latitude:.2f}, Lon {telemetry.longitude:.2f}")
+        if telemetry is not None:
+            logger.info(f"Initial ISS Position: Lat {telemetry.latitude:.2f}, Lon {telemetry.longitude:.2f}")
+        else:
+            logger.warning("No ISS position yet; showing NO LINK until the first fetch succeeds")
         renderer.set_telemetry(telemetry)
         hud_composer.set_telemetry(telemetry)
 
