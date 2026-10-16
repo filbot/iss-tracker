@@ -232,7 +232,7 @@ color = [0, 255, 255]
 
 Styles cascade from the HUD base, to each bar, to individual elements, so you can set a style broadly and override it where needed. Delete any line to fall back to the built-in default.
 
-The globe is rendered ahead of time, so after changing any `[globe]` setting you need to render it again on a computer with Cartopy installed. See [Globe frames](#globe-frames). `map_resolution` sets the coastline detail from Natural Earth: `110m`, `50m` (the default), or `10m`.
+The globe is rendered ahead of time, so after changing any `[globe]` setting you need to render it again on a computer with Cartopy installed. See [Globe frames](#globe-frames). `map_resolution` sets the coastline detail from Natural Earth: `110m` (the default), `50m`, or `10m`. On the 3.5" panel, `50m` coastlines look noisier than `110m`.
 
 ### Data sources
 
@@ -278,7 +278,7 @@ python tools/render_globe.py
 git add theme.toml src/iss_display/assets/globe_frames.npz
 ```
 
-Rendering at `50m` takes about 2 minutes on a 12-core Mac.
+Rendering takes about 20 seconds at `110m` on a 12-core Mac, and about 2 minutes at `50m`.
 
 ### The systemd service
 
