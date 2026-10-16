@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import gc
 import logging
 import os
@@ -870,24 +871,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     settings = Settings.load()
 
     # Override preview_only from CLI if set
-    if args.preview_only and not settings.preview_only:
-        # Reconstruct settings with preview_only=True
-        settings = Settings(
-            iss_api_url=settings.iss_api_url,
-            n2yo_api_key=settings.n2yo_api_key,
-            display_width=settings.display_width,
-            display_height=settings.display_height,
-            preview_dir=settings.preview_dir,
-            preview_only=True,
-            log_level=settings.log_level,
-            gpio_dc=settings.gpio_dc,
-            gpio_rst=settings.gpio_rst,
-            gpio_bl=settings.gpio_bl,
-            gpio_toggle=settings.gpio_toggle,
-            spi_bus=settings.spi_bus,
-            spi_device=settings.spi_device,
-            spi_speed_hz=settings.spi_speed_hz,
-        )
+    if args.preview_only:
+        settings = dataclasses.replace(settings, preview_only=True)
 
     configure_logging(settings.log_level)
     run_loop(settings)
