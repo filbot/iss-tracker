@@ -345,8 +345,8 @@ class ST7796S:
     def display_region(self, x0: int, y0: int, x1: int, y1: int, frame_buf_np: "np.ndarray"):
         """Send a rectangular sub-region from frame_buf_np to the display.
 
-        Used for partial updates (ISS marker erase/redraw) to avoid sending
-        the full 307 KB frame when only a small area changed.
+        Used for globe-disc and HUD-bar updates to avoid sending the full
+        307 KB frame when only part of the screen changed.
         """
         region_bytes = np.ascontiguousarray(frame_buf_np[y0:y1 + 1, x0:x1 + 1]).tobytes()
         try:
@@ -1374,7 +1374,7 @@ class LcdDisplay:
 
         Draws concentric glow rings + core + center dot.
         Returns the (x0, y0, x1, y1) bounding box of the painted region so the
-        caller can erase it on the next partial update.
+        caller can erase it on the next frame.
 
         Uses pre-allocated arrays (_marker_dist_sq_full, _marker_color_buf,
         _marker_mask) to avoid per-frame numpy allocations that cause GC jitter.
@@ -1471,7 +1471,7 @@ class LcdDisplay:
         Forced full update (init, view-toggle, error recovery):
           Compose entire frame in _frame_buf and send 307 KB in one transfer.
 
-        Globe-region update (typical):
+        Globe-region update (all other frames):
           Refresh the disc bbox in _frame_buf_np → draw marker → send the
           union of disc + marker bboxes (~17 ms SPI). When the composer has
           produced new HUD bytes since our last transmission, follow up with
@@ -1479,9 +1479,8 @@ class LcdDisplay:
           cost ~5–10 ms of extra SPI per frame, never block on PIL, and never
           force a full-frame transfer.
 
-        Partial update (globe and HUD unchanged):
-          Erase previous marker → draw new marker → send only the two tiny
-          marker bounding-box regions (~1 KB total).
+        The frame index advances on every call, so the globe always changes
+        and there is no marker-only update path.
         """
         if not self.frames_generated:
             logger.warning("Frames not yet generated")
@@ -1506,7 +1505,6 @@ class LcdDisplay:
                 current_frame = (prev_frame + 1) % self.num_frames
         central_lon = (current_frame * (360.0 / self.num_frames)) - 180.0
 
-        globe_changed = current_frame != self._prev_frame_idx
         iss_pos = (None if telemetry is None else
                    self._calc_iss_screen_pos(telemetry.latitude, telemetry.longitude, central_lon))
 
@@ -1517,11 +1515,8 @@ class LcdDisplay:
             # post-globe HUD path won't re-transmit immediately.
             self._do_full_update(current_frame, iss_pos)
             self._force_full_frame = False
-        elif globe_changed:
-            self._do_globe_region_update(current_frame, iss_pos)
-            self._flush_hud_if_dirty()
         else:
-            self._do_partial_update(current_frame, iss_pos)
+            self._do_globe_region_update(current_frame, iss_pos)
             self._flush_hud_if_dirty()
 
         self._prev_frame_idx = current_frame
@@ -1620,35 +1615,6 @@ class LcdDisplay:
                 ux1 = max(ux1, bb[2]); uy1 = max(uy1, bb[3])
 
         self.display_region(ux0, uy0, ux1, uy1)
-        self._prev_marker_bbox = new_bbox
-
-    def _do_partial_update(self, frame_idx: int, iss_pos):
-        """Partial update: erase old marker, draw new, send union bbox once.
-
-        Uses a single SPI transfer covering both old and new marker regions
-        to prevent flicker from the display briefly showing bare globe.
-        """
-        old_bbox = self._prev_marker_bbox
-
-        # Erase old marker by restoring globe pixels (buffer only, no SPI)
-        if old_bbox is not None:
-            x0, y0, x1, y1 = old_bbox
-            self._frame_buf_np[y0:y1 + 1, x0:x1 + 1] = self.frame_np_cache[frame_idx][y0:y1 + 1, x0:x1 + 1]
-
-        # Draw new marker into buffer
-        new_bbox = None
-        if iss_pos is not None:
-            px, py, opacity = iss_pos
-            new_bbox = self._draw_iss_marker_rgb565(px, py, opacity)
-
-        # Send the union of old and new bounding boxes in one SPI transfer
-        union = old_bbox if new_bbox is None else new_bbox if old_bbox is None else (
-            min(old_bbox[0], new_bbox[0]), min(old_bbox[1], new_bbox[1]),
-            max(old_bbox[2], new_bbox[2]), max(old_bbox[3], new_bbox[3]),
-        )
-        if union is not None:
-            self.display_region(*union)
-
         self._prev_marker_bbox = new_bbox
 
     def _save_preview(self, pixel_bytes: Union[bytes, bytearray]):
