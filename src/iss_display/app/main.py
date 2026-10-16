@@ -50,6 +50,14 @@ _MAX_DATA_AGE_SEC = 600.0
 # hours of a network outage — seen in the Aug 2026 brcmfmac incident).
 _MAX_EXTRAPOLATION_SEC = 300.0
 
+# Only estimate velocity from two fixes at most this far apart (covers the
+# 60s max backoff plus slow fetches). Over a longer gap the ISS has moved
+# far enough that the longitude delta wraps and the latitude rate is
+# meaningless, so the estimate resets to the nominal ground-track rate.
+_MAX_VELOCITY_DT_SEC = 90.0
+
+_NOMINAL_LON_VELOCITY = 360.0 / ISS_ORBITAL_PERIOD_SEC  # deg/s
+
 # Futile-restart log decimation: during a prolonged outage the fetch thread
 # is restarted every ~30s forever; log the first few then one per this many.
 _LOG_EVERY_N_RESTARTS = 20  # ~one WARNING per 10 minutes
@@ -110,7 +118,7 @@ class ISSOrbitInterpolator:
         self._prev_fetch_time: Optional[float] = None
 
         # Estimated velocity (degrees per second)
-        self._lon_velocity: float = 360.0 / ISS_ORBITAL_PERIOD_SEC
+        self._lon_velocity: float = _NOMINAL_LON_VELOCITY
         self._lat_velocity: float = 0.0
 
         self._lock = threading.Lock()
@@ -279,7 +287,10 @@ class ISSOrbitInterpolator:
 
                 if self._prev_fix is not None and self._prev_fetch_time is not None:
                     dt = now - self._prev_fetch_time
-                    if dt > 0.1:
+                    if dt > _MAX_VELOCITY_DT_SEC:
+                        self._lon_velocity = _NOMINAL_LON_VELOCITY
+                        self._lat_velocity = 0.0
+                    elif dt > 0.1:
                         dlon = fix.longitude - self._prev_fix.longitude
                         if dlon > 180:
                             dlon -= 360

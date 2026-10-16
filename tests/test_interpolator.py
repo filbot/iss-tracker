@@ -66,3 +66,29 @@ def test_no_fix_returns_none_until_first_fetch(clock):
     client.queue.append(fix(10.0, 20.0))
     interp._do_fetch()
     assert interp.get_telemetry().latitude == pytest.approx(10.0)
+
+
+def test_velocity_resets_after_long_gap(clock):
+    client = FakeClient()
+    interp = ISSOrbitInterpolator(client)
+    client.queue += [fix(0.0, 0.0), fix(40.0, -142.0)]
+    interp._do_fetch()
+    clock.mono += 3600  # an hour-long outage
+    interp._do_fetch()
+
+    # The raw delta would wrap to a westward velocity; the ISS always
+    # moves east, so the estimate must fall back to the nominal rate.
+    assert interp._lon_velocity == pytest.approx(main._NOMINAL_LON_VELOCITY)
+    assert interp._lat_velocity == 0.0
+
+
+def test_velocity_estimated_from_close_fixes(clock):
+    client = FakeClient()
+    interp = ISSOrbitInterpolator(client)
+    client.queue += [fix(10.0, 20.0), fix(11.0, 22.0)]
+    interp._do_fetch()
+    clock.mono += 30
+    interp._do_fetch()
+
+    assert interp._lon_velocity == pytest.approx(2.0 / 30)
+    assert interp._lat_velocity == pytest.approx(1.0 / 30)
