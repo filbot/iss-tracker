@@ -98,7 +98,7 @@ iss-display
 
 The first run renders 480 globe frames and saves them. This can take up to 10 minutes on a Pi 3 (less on a Pi 4), and the globe won't appear until it finishes. Later starts take a few seconds. Press `Ctrl+C` to stop.
 
-To try it without the display attached, generate preview images in `var/previews/` instead:
+To try it without the display attached, generate preview images in `var/previews/` instead (it keeps the latest 100):
 
 ```bash
 iss-display --preview-only
@@ -153,7 +153,7 @@ The default view is a rotating globe with a glowing marker at the ISS position. 
 | **VEL** | Speed in km/h |
 | **LAST** | Time since the last position update, like `38s`, `12m`, or `47h` |
 
-The app fetches a new position every 30 seconds and moves the marker smoothly in between. If the internet connection drops, it keeps estimating the position for up to 5 minutes, then holds the marker in place. After 10 minutes without data, **OVER** changes to an amber **NO LINK** warning.
+The app fetches a new position every 30 seconds and moves the marker smoothly in between. If the internet connection drops, it keeps estimating the position for up to 5 minutes, then holds the marker in place. After 10 minutes without data, **OVER** changes to an amber **NO LINK** warning. If the app starts without internet, the globe turns with no marker, the readings show `--`, and **OVER** shows **NO LINK** until the first position arrives.
 
 ### People in Space view
 
@@ -189,10 +189,10 @@ Almost always the power supply. Run `vcgencmd get_throttled`. Anything other tha
 Redo [step 6](#6-give-your-user-access-to-the-pins), then log out and back in.
 
 **Globe frames regenerate every time**
-Make sure `var/frame_cache/` exists and your user can write to it.
+Make sure `var/frame_cache/` exists and your user can write to it. Editing any `[globe]` setting in `theme.toml` also triggers one re-render, which is expected.
 
 **Service won't start or keeps restarting**
-Check the log: `journalctl --user -u iss-display -f`
+Check the log: `journalctl --user -u iss-display -f`. If the display can't be initialized, the app exits so systemd can retry; look for the error just before each restart.
 
 ---
 
@@ -230,7 +230,7 @@ color = [0, 255, 255]
 
 Styles cascade from the HUD base, to each bar, to individual elements, so you can set a style broadly and override it where needed. Delete any line to fall back to the built-in default.
 
-After changing globe colors or `num_frames`, delete `var/frame_cache/` so the globe is re-rendered.
+Changing any `[globe]` setting re-renders the globe on the next start, which takes up to 10 minutes on a Pi 3.
 
 ### Data sources
 
@@ -240,7 +240,7 @@ The app uses free, public APIs. No registration is needed for the default setup.
 |-----|---------|:------------:|
 | [Where the ISS at?](https://wheretheiss.at) | ISS position (primary) | No |
 | [N2YO](https://www.n2yo.com/api/) | ISS position (fallback) | Yes (free) |
-| [Open Notify Astros](http://open-notify.org) | People in Space | No |
+| [International Space Station APIs](https://github.com/corquaid/international-space-station-APIs) | People in Space | No |
 
 If the primary API fails and you've added an N2YO key to `.env`, the app tries N2YO next. N2YO doesn't report speed, so VEL shows `--` while it's in use.
 
@@ -266,8 +266,10 @@ At the measured 66.7 MHz (verified artifact-free on this panel; see `bench/RESUL
 
 The globe is 480 pre-rendered frames (`num_frames` in `theme.toml`) drawn with [Cartopy](https://scitools.org.uk/cartopy). Two caches live in `var/frame_cache/`:
 
-- `globe_480f.npz`: the rendered RGB frames (Cartopy output)
-- `globe_480f_rgb565_320x480.npy`: the same frames converted to the display's RGB565 format
+- `globe_480f_<hash>.npz`: the rendered RGB frames (Cartopy output)
+- `globe_480f_<hash>_rgb565.npy`: the same frames converted to the display's RGB565 format
+
+The `<hash>` covers every `theme.toml` globe setting and the display size, so a theme change produces a new cache instead of reusing stale frames. Once the new cache is saved, caches from older settings are deleted.
 
 The first run generates the frames (about 2 to 4 minutes on a Pi 4, longer on a Pi 3), then converts them to RGB565 (about 4.5 minutes on a Pi 3) and caches both. Later runs load the RGB565 cache directly in a few seconds without opening the `.npz`. Deleting only the `.npz` and regenerating it also invalidates the RGB565 cache automatically (by comparing modification times).
 
