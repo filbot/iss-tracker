@@ -24,6 +24,8 @@ A Raspberry Pi-powered display that tracks the International Space Station in re
 
 > The display sits on top of the Pi — no breadboard or extra wiring needed unless you add the toggle switch.
 
+> Make sure you get the **(F)** model. Other models, such as the (A), use different drivers and won't work with this code as-is.
+
 > ⚠️ **The power supply makes or breaks display performance.** The Pi throttles
 > whenever the 5 V rail dips below 4.63 V: the CPU is capped at half speed
 > (600 MHz) and the core clock — **which the SPI display bus is derived from** —
@@ -68,7 +70,8 @@ sudo reboot
 ### 4. Clone and install
 
 ```bash
-# Clone this repo and cd into it
+git clone https://github.com/filbot/iss-tracker.git
+cd iss-tracker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
